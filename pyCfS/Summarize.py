@@ -70,6 +70,8 @@ def _load_results(result_path:str, result_experiments:list, valid_keys_and_types
 
     if 'p_value' in result_experiments:
         p_value = pd.read_csv(result_path + "BP_gene_results.csv", index_col = 0)
+        if isinstance(p_value.index[0], float):
+            p_value = p_value.set_index('gene')
         return_dict['p_value'] = p_value
     
     if 'consensus' in result_experiments:
