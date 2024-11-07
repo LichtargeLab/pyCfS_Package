@@ -1,5 +1,5 @@
 # pyCfS
-Version 0.1.1 <br>
+Version 0.1.2 <br>
 The aggregation of Lichtarge Lab genotype-phenotype validation experiments<br>
 
 ## Installation
@@ -17,7 +17,7 @@ conda activate pyCfS<br>
 conda install -c conda-forge r-base r-ggplot2 r-deldir r-rcppeigen r-interp rpy2 rasterio r-tzdb r-vroom r-readr r-cowplot r-tidyverse <br>
 
 ### Install pyCfS (in anaconda environment)
-pip install git+https://github.com/LichtargeLab/pyCfS_Package.git <br>
+pip install git+https://github.com/kevwilhelm95/pyCfS.git <br>
 (Ensure pip is pointing to anaconda environment, if it is not, use anaconda environment pip: /path/to/env/../bin/pip install git+...) <br>
 
 #### Examples
@@ -118,6 +118,7 @@ Statistical p-value combination methods, including Cauchy, MCM, CMC, Minimum p, 
     - `df_4` (pd.DataFrame): Additional two-column df.
     - `df_5` (pd.DataFrame): Additional two-column df.
     - `df_6` (pd.DataFrame): Additional two-column df.
+    - `list_names` (Any): Names of the dataframes to be included as column identifiers. Defaults to False.
     - `gene_df` (pd.DataFrame): Dataframe of p-values if more than 6. Index = gene names. Column 1-x = 'p_{list name}' (p-values). Do not fill NAs with 1s.
     - `savepath` (str): File path. No files saved if not provided.
 #### Returns:
@@ -139,6 +140,7 @@ Assess gene set network connectivity and functional enrichment using the STRING 
     - `plot_fontsize` (int): Default = 14.
     - `plot_fontface` (str): Default = Avenir.
     - `savepath` (str): Parent path for saving.
+    - `verbose` (int): Verbosity toggle. Default = 0
 #### Returns:
 - `pd.DataFrame`: Table of network edges 
 - `float` : P-value of PPI enrichment
@@ -184,9 +186,9 @@ Assess the broad network connectivity between two gene sets in the STRING networ
     - `savepath` (str): Path for saving.
     - `verbose` (int): Verbosity argument. Default = no verbose (0).
 #### Returns:
-- `Image`: AUROC plot for show_1 (Most often "from Set1 Exclusive to Set2")
+- `Image`: AUROC plot for show_1 ("from Set1 Exclusive to Set2", if no overlap then "from Set1 to Set2")
 - `float`: Z-score for show_1 AUROC (randomized set1, degree-matched)
-- `Image`: AUROC plot for show_2 (Most often "from Set2 Exclusive to Set1")
+- `Image`: AUROC plot for show_2 ("from Set2 Exclusive to Set1", if no overlap then "from Set1 to Set2")
 - `float`: Z-score for show_2 AUROC (randomized set2, degree-matched)
 
 
@@ -234,6 +236,7 @@ Assess the enrichment for co-localization within X Mbp of genome-wide significan
     - `cores` (int): # of cores for parallelization (Default = 1).
     - `savepath` (str): Path to save. If not used, no files are saved.
     - `save_summary_statistics` (bool): True to save downloaded summary stats if savepath is also defined.
+    - `verbose` (int): Verbosity toggle. Default = 1
 #### Returns:
 - `pd.DataFrame` : Two-column table of SNPs that colocalize with query gene.
 - `float` : Fisher's exact test p-value
@@ -283,6 +286,7 @@ Assess abnormal mouse phenotype enrichments from Mouse Genome Informatics (Data 
     - `plot_q_threshold` (float): Significance threshold for strip plot (Default = 0.05).
     - `plot_show_labels` (bool): If true, plot labels provided in `plot_labels_to_show` (Default = False).
     - `plot_labels_to_show` (list): Phenotype labels to plot. Use labels in "modelPhenotypeLabel" of output dataframe.
+    - `plot_fontface` (str)
     - `cores` (int): Default = 1.
     - `savepath` (str): File path.
     - `verbose` (int): Verbosity argument. Default = no verbose (0).
@@ -378,6 +382,7 @@ Notes: If multiple models are input (e.g. ['RF', 'LR', 'GB']), the three models 
     - `models` (list or str): Abbreviations for models to evaluate. LR = Logistic Regression. SVC = Support Vector Classifier. RF = Random Forest. GB = Gradient Boosting. XGB = Extreme Gradient Boosting. Can define using either ['RF', 'LR'] or "RF, LR". Default = RF.
     - `rfe` (bool): Toggle to perform recursive feature elimination. Default = False
     - `rfe_min_feature_ratio` (float): Ratio to set the minimum number of features to keep (e.g. 0.5 represents at minimum, keep 50% of the features). Default = 0.5.
+    - `optimize_hyperparameters` (bool): Toggle to optimize hyperparameters using Bayesian optimization. If False, random hyperparameters will be chosen and only the last model will be analyzed. Default = True.
     - `cores` (int): Number of cores for parallel rfe and hyperparameter optimization. Default = 1
     - `savepath` (str): Path to save the output files.
     - `verbose` (int): Verbosity argument. Default = no verbose (0).
@@ -409,7 +414,6 @@ Takes the variants_by_sample output and performs odds ratio calculations based o
     - `savepath` (str): Path for saving.
     - `verbose` (int): Verbosity argument. Default = no verbose (0).
 #### Returns:
-- `pd.DataFrame`: Aggregated counts of variants transformed from the variants_by_sample output. Note: The output is filtered according to the optional parameters above (e.g. if max_af = 0.01, the dataframe will only contain aggregated variant counts for variants with AF < 1%).
 - `pd.DataFrame`: Table of resulting odds ratios calculated, their p-values, and FDR corrections.
 - `Image`: Odds ratio scatter plot of analyzed genomic objects.
 
@@ -509,3 +513,5 @@ An evidence-based gene prioritization schema, ranking genes based on levels of e
     - `drug_source` (str): Selection for "result_path" to select drug source. Options include "all" (default), "DGIdb" and "OpenTargets".
     - `show_indiv_scores` (bool): Toggle to output each individual experiments scores in the output dataframe.
     - `savepath` (str): Directory to save
+#### Returns: 
+- `pd.DataFrame` : The annotated and ranked dataframe

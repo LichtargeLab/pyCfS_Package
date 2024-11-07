@@ -565,12 +565,15 @@ def mouse_phenotype_enrichment(query:list, custom_background:Any = 'ensembl', ra
 
     Args:
     - query (list): A list of gene symbols to be tested for enrichment.
-    - background (str): The gene set to be used as the background for the enrichment analysis. Default is 'ensembl'.
+    - custom_background (str): The gene set to be used as the background for the enrichment analysis. Default is 'ensembl'. Options include 'reactome', 'ensembl', 'string_v12.0', 'string_v11.5', 'string_v11.0', 'string_v10.0'. STRING background is all interactions > 0.15.
     - random_iter (int): The number of random iterations to perform for the enrichment analysis. Default is 5000.
     - plot_sig_color (str): The color to use for significant points in the enrichment plot. Default is 'red'.
     - plot_q_threshold (float): The q-value threshold for significance in the enrichment plot. Default is 0.05.
     - plot_show_labels (bool): Whether to show labels on the enrichment plot. Default is False.
     - plot_labels_to_show (list): A list of phenotype labels to show on the enrichment plot. Default is [False].
+    - plot_fontface (str): The font face to use for the enrichment plot. Default is 'Avenir'.
+    - plot_fontsize (int): The font size to use for the enrichment plot. Default is 14.
+    - cores (int): The number of CPU cores to use for parallel processing. Default is 1.
     - savepath (Any): The path to save the output files. Default is False.
 
     Returns:
@@ -955,16 +958,17 @@ def protein_family_enrichment(query:list, custom_background:Any = 'ensembl', lev
     Perform protein family enrichment analysis.
 
     Args:
-        query (list): List of genes to analyze.
-        background (str, optional): Background gene set. Defaults to 'ensembl'.
-        level (list, optional): List of levels to analyze. Defaults to ['all'].
-        random_iter (int, optional): Number of random iterations. Defaults to 5000.
-        plot_q_cut (float, optional): Q-value cutoff for plotting. Defaults to 0.05.
-        plot_sig_dot_color (str, optional): Color of significant dots in the plot. Defaults to 'red'.
-        plot_fontface (str, optional): Font face for the plot. Defaults to 'Avenir'.
-        plot_fontsize (int, optional): Font size for the plot. Defaults to 14.
-        cores (int, optional): Number of CPU cores to use. Defaults to 1.
-        savepath (Any, optional): Path to save the results. Defaults to False.
+        - query (list): List of genes to analyze.
+        - custom_background (str, optional): Background gene set. Defaults to 'ensembl'. Options include 'reactome', 'ensembl', 'string_v12.0', 'string_v11.5', 'string_v11.0', 'string_v10.0'. STRING background is all interactions > 0.15.
+        - level (list, optional): List of levels to analyze. Defaults to ['all'].
+        - random_iter (int, optional): Number of random iterations. Defaults to 5000.
+        - plot_q_cut (float, optional): Q-value cutoff for plotting. Defaults to 0.05.
+        - plot_sig_dot_color (str, optional): Color of significant dots in the plot. Defaults to 'red'.
+        - plot_fontface (str, optional): Font face for the plot. Defaults to 'Avenir'.
+        - plot_fontsize (int, optional): Font size for the plot. Defaults to 14.
+        - cores (int, optional): Number of CPU cores to use. Defaults to 1.
+        - savepath (Any, optional): Path to save the results. Defaults to False.
+        - verbose (int, optional): Verbosity level. Defaults to 0.
 
     Returns:
         pd.DataFrame: Summary dataframe of the enrichment analysis.
@@ -1174,22 +1178,23 @@ def _plot_depmap_distributions(query_avg_score:list, control_avg_score:list, p_v
     plt.close()
     return image
 
-def depmap_enrichment(query:list, cancer_type:list, custom_background:Any = 'depmap', plot_fontface:str = 'Avenir', plot_fontsize:int = 14, plot_query_color:str = 'red', plot_background_color:str = 'gray', savepath:str = False, verbose:int = 0) -> (float, Image): # type: ignore
+def depmap_enrichment(query:list, cancer_type:list, custom_background:Any = 'depmap', plot_fontface:str = 'Avenir', plot_fontsize:int = 14, plot_query_color:str = 'red', plot_background_color:str = 'gray', savepath:str = False, verbose:int = 0) -> (pd.DataFrame, float, Image): # type: ignore
     """
     Performs enrichment analysis using DepMap scores for a given query gene list and cancer type.
 
     Args:
-        query (list): List of query genes.
-        cancer_type (list): List of cancer types.
-        control_genes (list, optional): List of control genes. Defaults to an empty list.
-        plot_fontface (str, optional): Font face for the plot. Defaults to 'Avenir'.
-        plot_fontsize (int, optional): Font size for the plot. Defaults to 14.
-        plot_query_color (str, optional): Color for the query gene distribution in the plot. Defaults to 'red'.
-        plot_background_color (str, optional): Color for the background gene distribution in the plot. Defaults to 'gray'.
-        savepath (str, optional): Path to save the output files. Defaults to False.
+        - query (list): List of query genes.
+        - cancer_type (list): List of cancer types.
+        - custom_background (list, optional): List of background genes. Defaults to depmap. Options include 'reactome', 'ensembl', 'string_v12.0', 'string_v11.5', 'string_v11.0', 'string_v10.0'. STRING background is all interactions > 0.15.
+        - plot_fontface (str, optional): Font face for the plot. Defaults to 'Avenir'.
+        - plot_fontsize (int, optional): Font size for the plot. Defaults to 14.
+        - plot_query_color (str, optional): Color for the query gene distribution in the plot. Defaults to 'red'.
+        - plot_background_color (str, optional): Color for the background gene distribution in the plot. Defaults to 'gray'.
+        - savepath (str, optional): Path to save the output files. Defaults to False.
+        - verbose (int, optional): Verbosity level. Defaults to 0.
 
     Returns:
-        tuple: A tuple containing the p-value and the plot image.
+        tuple: A tuple containing a dataframe of cancer dependency scores, the p-value, and the plot image.
     """
     # Load depmap scores
     depmap_df, _ = _load_depmap()
@@ -1494,9 +1499,10 @@ def drug_gene_interactions(query: list, drug_source:list = ['OpenTargets'], dgid
     - dgidb_min_citations (int): Minimum number of citations required for a drug-gene interaction to be considered. Default is 1.
     - approved (bool): Whether to filter drugs by approval status. Default is True.
     - savepath (Any): Path to save the drug-gene interaction data. If False, the data will not be saved. Default is False.
+    - verbose (int): Verbosity level. Default is 0.
 
     Returns:
-    - df (pandas.DataFrame): DataFrame containing the drug-gene interaction data.
+    - dict (dictionary): Dictionary of dataframes containing drug-gene interactions. {'DGIdb': dgi_db, 'OpenTargets': ot_drugs_df}
 
     Raises:
     - ValueError: If the drug_source parameter is not 'OpenTargets' or 'DGIdb'.

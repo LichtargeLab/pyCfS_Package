@@ -129,16 +129,20 @@ def consensus(genes_1:list = False, genes_2:list = False, genes_3: list = False,
 
     Parameters:
     -----------
-    genes_1, genes_2, genes_3, genes_4, genes_5, genes_6 : list
-        Lists of genes to be combined and analyzed. NaNs, None values, or empty strings are excluded.
-    savepath : Any, optional
-        If provided, the path where the resulting DataFrame will be saved as a CSV file (default is False).
+    - genes_1, genes_2, genes_3, genes_4, genes_5, genes_6 (list) : Lists of genes to be combined and analyzed. NaNs, None values, or empty strings are excluded.
+    - gene_dict (dict) : dictionary of gene lists as alternative to defining individual gene lists. {list_name: gene_list}
+    - list_names (list) : list of names for each gene list. If not provided, default names are generated.
+    - plot_fontface (str) : Font face to be used in the upset plot (default is 'Avenir').
+    - plot_fontsize (int) : Font size to be used in the upset plot (default is 14).
+    - savepath (Any, optional) : If provided, the path where the resulting DataFrame will be saved as a CSV file (default is False).
 
     Returns:
     --------
     pd.DataFrame
         A DataFrame with columns 'gene', 'occurrences', and 'lists', detailing each unique gene,
         its number of occurrences, and the lists it appeared in.
+    Image
+        Upset plot showing overlap between gene lists.
 
     Example:
     --------
@@ -443,6 +447,7 @@ def _mcl_analysis(network_df:pd.DataFrame, inflation:Any, verbose:int = 0) -> (l
 
     Returns:
     - clusters: a list of clusters, where each cluster is a list of nodes
+    - max_q_inflation: the inflation parameter used for the MCL algorithm
     - G: a NetworkX graph object representing the network
     - clusters_dict: a dictionary where the keys are the names of the clusters and the values are lists of nodes in each cluster
     """
@@ -999,14 +1004,18 @@ def functional_clustering(genes_1: list = False, genes_2: list = False, genes_3:
     - genes_4 (Any, optional): List of genes to be analyzed. Defaults to False.
     - genes_5 (Any, optional): List of genes to be analyzed. Defaults to False.
     - source_names (Any, optional): List of source names for the genes. Defaults to False.
+    - gene_dict (Any, optional): Dictionary of gene sets (as alternative to above; e.g. {'gene_set_1': ['gene1', 'gene2', ...], 'gene_set_2': ['gene3', 'gene4', ...]}). Defaults to False.
+    - string_version (str, optional): STRING version to use. Defaults to 'v11.0'. Options include 'v10.0', 'v11.0', 'v11.5', 'v12.0'.
     - evidences (list, optional): List of evidences to be used for network cleaning. Defaults to ['all'].
     - edge_confidence (str, optional): Edge confidence level for network cleaning. Defaults to 'highest'.
+    - custom_background (Any, optional): Custom background gene set. Defaults to 'string'. Options include 'string', 'ensembl', 'reactome', or user defined list.
     - random_iter (int, optional): Number of random iterations for cluster enrichment analysis. Defaults to 100.
     - inflation (Any, optional): Inflation parameter for MCL clustering. Defaults to None.
     - pathways_min_group_size (int, optional): Minimum group size for functional enrichment. Defaults to 5.
     - pathways_max_group_size (int, optional): Maximum group size for functional enrichment. Defaults to 100.
     - cores (int, optional): Number of cores to use for multiprocessing. Defaults to 1.
     - savepath (Any, optional): Path to save output files. Defaults to False.
+    - verbose (int, optional): Verbosity level. Defaults to 0.
 
     Returns:
     - true_gene_network (pandas.DataFrame): DataFrame of the true gene network.
@@ -1392,6 +1401,8 @@ def statistical_combination(df_1:pd.DataFrame = pd.DataFrame(), df_2:pd.DataFram
         The sixth DataFrame to be included in the statistical combination (default is False).
     list_names : Any, optional
         The names of the DataFrames to be included in the statistical combination (default is False).
+    gene_df : pd.DataFrame
+        Dataframe of p-values if more than 6 (or alternative to above). Index = gene names. Columns 1-x = 'p_{list_name}' with p-values. Do not fille NAs with 1s.
     savepath : Any, optional
         If provided, the path where the resulting DataFrame will be saved as a CSV file (default is False).
 
