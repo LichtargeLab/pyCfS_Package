@@ -8,6 +8,8 @@ Functions:
 import pkg_resources
 import io
 import os
+from tqdm import tqdm
+import concurrent.futures
 import requests
 import time
 from multiprocessing import Pool
@@ -23,7 +25,6 @@ from matplotlib_venn import venn2
 from matplotlib.colors import Normalize
 from matplotlib.cm import ScalarMappable
 import seaborn as sns
-import tqdm
 from PIL import Image
 from venn import venn
 from scipy.stats import norm, fisher_exact, ks_2samp
@@ -162,13 +163,15 @@ def goldstandard_overlap(query: list, goldstandard:list, custom_background:Any =
     genes and the p-value.
 
     Args:
-        query (list): A list of genes representing the query set.
-        goldstandard (list): A list of genes representing the gold standard set.
-        plot_query_color (str, optional): Color for the query set in the Venn diagram. Defaults to 'red'.
-        plot_goldstandard_color (str, optional): Color for the gold standard set in the Venn diagram. Defaults to 'gray'.
-        plot_fontsize (int, optional): Font size for the text in the Venn diagram. Defaults to 14.
-        plot_fontface (str, optional): Font face for the text in the Venn diagram. Defaults to 'Avenir'.
-        savepath (Any, optional): Path to save the output files. If False, files are not saved. Defaults to False.
+        - query (list): A list of genes representing the query set.
+        - goldstandard (list): A list of genes representing the gold standard set.
+        - custom_background (Any, optional): Background gene set. Defaults to 'ensembl'. Options include 'reactome', 'ensembl', 'string_v12.0', 'string_v11.5', 'string_v11.0', 'string_v10.0'. STRING background is all interactions > 0.15.
+        - plot_query_color (str, optional): Color for the query set in the Venn diagram. Defaults to 'red'.
+        - plot_goldstandard_color (str, optional): Color for the gold standard set in the Venn diagram. Defaults to 'gray'.
+        - plot_show_gene_pval (bool, optional): Whether to show the overlapping genes and p-value in the Venn diagram. Defaults to True.
+        - plot_fontsize (int, optional): Font size for the text in the Venn diagram. Defaults to 14.
+        - plot_fontface (str, optional): Font face for the text in the Venn diagram. Defaults to 'Avenir'.
+        - savepath (Any, optional): Path to save the output files. If False, files are not saved. Defaults to False.
 
     Returns:
         tuple:
@@ -264,7 +267,7 @@ def _format_method(method: str) -> str:
         ValueError: If the method is not one of the valid options.
     """
     if method == 'network_image':
-        return "image/network?"
+        return "highres_image/network?"
     elif method == 'network_interactions':
         return "tsv/network?"
     elif method == 'ppi_enrichment':
@@ -438,12 +441,14 @@ def string_enrichment(query:list, string_version:str = 'v11.0', edge_confidence:
     Performs STRING enrichment analysis for a given list of genes.
 
     Args:
-        query (list): List of genes for enrichment analysis.
-        score_threshold (str, optional): Score threshold for STRING interactions. Defaults to 'medium'.
-        species (int, optional): Species ID for STRING database. Defaults to 9606.
-        plot_fontsize (int, optional): Font size for enrichment plots. Defaults to 14.
-        plot_fontface (str, optional): Font face for enrichment plots. Defaults to 'Avenir'.
-        savepath (Any, optional): Path to save the results. Defaults to False.
+        - query (list): List of genes for enrichment analysis.
+        - string_version(str, optional): STRING database version. Defaults to 'v11.0'. Options include 'v10.0', 'v11.0', 'v11.5', and 'v12.0'.
+        - edge_confidence (str, optional): Confidence score for STRING interactions. Defaults to 'medium'. Options include 'all', 'low'(>0.15), 'medium'(0.4), 'high'(0.7), and 'highest'(0.9).
+        - species (int, optional): Species ID for STRING database. Defaults to 9606.
+        - plot_fontsize (int, optional): Font size for enrichment plots. Defaults to 14.
+        - plot_fontface (str, optional): Font face for enrichment plots. Defaults to 'Avenir'.
+        - savepath (Any, optional): Path to save the results. Defaults to False.
+        - verbose (int, optional): Verbosity level. Defaults to 0.
 
     Returns:
         tuple: A tuple containing the following:
@@ -1395,24 +1400,27 @@ def _write_sum_txt(result_fl: str, group1_name: str, group2_name: str, gp1_only_
 
 def ndiffusion(set_1: list, set_2: list, set_1_name:str = 'Set_1', set_2_name:str = 'Set_2', string_version:str = 'v11.0', evidences:list = ['all'], edge_confidence:str = 'all', custom_background:Any = 'string', n_iter: int = 100, cores:int =1, savepath:str = False, verbose: int = 0) -> (Image, float, Image, float): # type: ignore
     """
-    Performs network diffusion analysis between two sets of genes.
+        Performs network diffusion analysis between two sets of genes.
 
-    Args:
-        set_1 (list): List of genes in set 1.
-        set_2 (list): List of genes in set 2.
-        set_1_name (str, optional): Name of set 1. Defaults to 'Set_1'.
-        set_2_name (str, optional): Name of set 2. Defaults to 'Set_2'.
-        evidences (list, optional): List of evidence types to consider. Defaults to ['all'].
-        edge_confidence (str, optional): Confidence level for edges. Defaults to 'all'.
-        n_iter (int, optional): Number of diffusion iterations. Defaults to 100.
-        cores (int, optional): Number of cores to use for parallel processing. Defaults to 1.
-        savepath (str, optional): Path to save the results. Defaults to False.
+        Args:
+            - set_1 (list): List of genes in set 1.
+            - set_2 (list): List of genes in set 2.
+            - set_1_name (str, optional): Name of set 1. Defaults to 'Set_1'.
+            - set_2_name (str, optional): Name of set 2. Defaults to 'Set_2'.
+            - string_version (str, optional): STRING version to use. Defaults to 'v11.0'. Options include 'v10.0', 'v11.0', 'v11.5', 'v12.0'.
+            - evidences (list, optional): List of evidence types to consider. Defaults to ['all']. Options include 'experiments', 'databases', 'textmining', 'coexpression', 'neighborhood', 'fusion', 'cooccurrence'.
+            - edge_confidence (str, optional): Confidence level for edges. Defaults to 'all'. Options include 'all', 'low' (>0.15), 'medium' (0.4), 'high' (0.7), 'highest' (0.9).
+            - custom_background (Any, optional): Custom background gene set. Defaults to 'string'. Options include 'string', 'ensembl', 'reactome'.
+            - n_iter (int, optional): Number of diffusion iterations. Defaults to 100.
+            - cores (int, optional): Number of cores to use for parallel processing. Defaults to 1.
+            - savepath (str, optional): Path to save the results. Defaults to False.
+            - verbose (int, optional): Verbosity level. Defaults to 0.
 
-    Returns:
-        Image: AUROC plot for show_1
-        float: AUROC value for show_1
-        Image: AUROC plot for show_2
-        float: AUROC value for show_2
+        Returns:
+            Image: AUROC plot for show_1 - "from Set1Exclusive to Set2"; if there is no overlap, then "from Set1 to Set2"
+            float: AUROC value for show_1 - randomized set1, degree-matched
+            Image: AUROC plot for show_2 - "from Set2Exclusive to Set1"; if there is no overlap, then "from Set2 to Set1"
+            float: AUROC value for show_2 - randomized set2, degree-matched
     """
     # Set parameters
     group1_name = set_1_name
@@ -2129,20 +2137,23 @@ def interconnectivity(set_1:list, set_2:list, set_3:list = None, set_4:list = No
     including images, lists, and data structures.
 
     Args:
-        set_1 (list): Strings of gene names to network embed.
-        set_2 (list): Strings of gene names to network embed.
-        set_3 (list, optional): Strings of gene names to network embed. Defaults to None.
-        set_4 (list, optional): Strings of gene names to network embed. Defaults to None.
-        set_5 (list, optional): Strings of gene names to network embed. Defaults to None.
-        savepath (str, optional): Path to the save directory. Defaults to './'.
-        evidences (list, optional): Evidences list to calculate interaction score. Defaults to ['all'].
-        edge_confidence (str, optional): Level of interactions to include. Defaults to 'highest'.
-        num_iterations (int, optional): Number of random samplings from STRING network. Defaults to 250
-        cores (int, optional): Number of cores for parallel jobs. Defaults to 1.
-        plot_background_color (str, optional): Color of the background distribution. Defaults to 'gray'.
-        plot_query_color (str, optional): Color of the query line. Defaults to 'red'.
-        plot_fontface (str, optional): Font face for plot text. Defaults to 'Avenir'.
-        plot_fontsize (int, optional): Font size for plot text. Defaults to 12.
+        - set_1 (list): Strings of gene names to network embed.
+        - set_2 (list): Strings of gene names to network embed.
+        - set_3 (list, optional): Strings of gene names to network embed. Defaults - to None.
+        - set_4 (list, optional): Strings of gene names to network embed. Defaults to None.
+        - set_5 (list, optional): Strings of gene names to network embed. Defaults to None.
+        - string_version (str, optional): Version of STRING network to use. Defaults to 'v11.0'. Options include 'v10.0', 'v11.0', 'v11.5', 'v12.0'.
+        - custom_background (Any, optional): Custom background gene list. Defaults to 'string'. Options include 'string', 'ensembl', 'reactome', or a user defined list.
+        - savepath (str, optional): Path to the save directory. Defaults to './'.
+        - evidences (list, optional): Evidences list to calculate interaction score. Defaults to ['all']. Options include 'all', 'textmining', 'experiments', 'databases', 'coexpression', 'neighborhood', 'gene_fusion', 'cooccurence'.
+        - edge_confidence (str, optional): Level of interactions to include. Defaults to 'highest'. Options include 'all', 'low' (>0.15), 'medium' (0.4), 'high' (0.7), 'highest' (0.9).
+        - num_iterations (int, optional): Number of random samplings from STRING network. Defaults to 250
+        - cores (int, optional): Number of cores for parallel jobs. Defaults to 1.
+        - plot_background_color (str, optional): Color of the background distribution. Defaults to 'gray'.
+        - plot_query_color (str, optional): Color of the query line. Defaults to 'red'.
+        - plot_fontface (str, optional): Font face for plot text. Defaults to 'Avenir'.
+        - plot_fontsize (int, optional): Font size for plot text. Defaults to 12.
+        - verbose (int, optional): Verbosity level. Defaults to 0.
 
     Returns:
         Image: A PIL Image object of the interconnectivity enrichment plot.
@@ -2538,14 +2549,16 @@ def gwas_catalog_colocalization(query:list, mondo_id:str = False, gwas_summary_p
     Fisher's Exact Test.
 
     Args:
-        query (list): A list of query gene symbols.
-        mondo_id (str, optional): The MONDO ID to pull GWAS catalog data. If provided, GWAS catalog data will be pulled based on this ID.
-        gwas_summary_path (str, optional): The file path to a pre-downloaded GWAS summary statistics file. Used if 'mondo_id' is not provided.
-        gwas_p_thresh (float, optional): The p-value threshold for filtering GWAS catalog SNPs. Defaults to 5e-8.
-        distance_mbp (float, optional): The distance in megabase pairs (Mbp) within which to search for SNPs around each gene. Defaults to 0.5 Mbp.
-        cores (int, optional): The number of CPU cores to use for parallel processing. Defaults to 1.
-        savepath (Any, optional): The path to save output files. If False, no files are saved.
-        save_summary_statistics (bool, optional): Flag to save GWAS summary statistics. Effective only if 'savepath' is provided.
+        - query (list): A list of query gene symbols.
+        - mondo_id (str, optional): The MONDO ID to pull GWAS catalog data. If provided, GWAS catalog data will be pulled based on this ID.
+        - gwas_summary_path (str, optional): The file path to a pre-downloaded GWAS summary statistics file. Used if 'mondo_id' is not provided.
+        - gwas_p_thresh (float, optional): The p-value threshold for filtering GWAS catalog SNPs. Defaults to 5e-8.
+        - distance_mbp (float, optional): The distance in megabase pairs (Mbp) within which to search for SNPs around each gene. Defaults to 0.5 Mbp.
+        - custom_background (Any, optional): A custom background gene list for colocalization analysis. Defaults to 'ensembl'. Options include 'string_v10.0', 'string_v11.0', 'string_v11.5', 'string_v12.0', 'ensembl', 'reactome', or a user-defined list. STRING versions will use edges with weight > 0.15
+        - cores (int, optional): The number of CPU cores to use for parallel processing. Defaults to 1.
+        - savepath (Any, optional): The path to save output files. If False, no files are saved.
+        - save_summary_statistics (bool, optional): Flag to save GWAS summary statistics. Effective only if 'savepath' is provided.
+        - verbose (int, optional): Verbosity level. Defaults to 0.
 
     Returns:
         pd.DataFrame: A DataFrame with genes and their associated SNPs within the specified distance.
@@ -2769,9 +2782,9 @@ def _fetch_query_pubmed(query: list, keyword: str, custom_terms:str, email: str,
 
     # Execute concurrent API calls to PubMed
     with concurrent.futures.ThreadPoolExecutor(max_workers=cores) as executor:
+        # Add tqdm for progress bar
         results = executor.map(_entrez_search, query, repeat(keyword), repeat(custom_terms), repeat(email), repeat(api_key), repeat(field))
-        # Process results for each gene
-        for result in results:
+        for result in tqdm(results, total=len(query), desc="Fetching PubMed data"):
             gene, n_paper_dis = _parse_entrez_result(result)
             # Populate the data frames with the results
             out_df.loc[gene, 'PMID for Gene + ' + col_name] = "; ".join(result.get('IdList', []))
@@ -2888,31 +2901,36 @@ def _plot_results(disease_query: str, background: list, observation: int, query:
 
     return image
 
-def pubmed_comentions(query:list, keyword: str = False, custom_terms: str = False, custom_background: Any = 'ensembl', field:str = 'all', email:str = 'kwilhelm95@gmail.com', api_key: str = '3a82b96dc21a79d573de046812f2e1187508', enrichment_trials: int = 100, workers: int = 15, run_enrichment:bool = True, enrichment_cutoffs:list = [[-1,0], [0,5], [5,15], [15,50], [50,100000]], plot_background_color:str = 'gray', plot_query_color: str = 'red', plot_fontface:str = 'Avenir', plot_fontsize:int = 14, savepath:Any = False, verbose:int = 0) -> (pd.DataFrame, dict, dict): # type: ignore
+def pubmed_comentions(query:list, keyword: str = False, custom_terms: str = False, custom_background: Any = 'ensembl', field:str = 'all', email:str = 'kwilhelm95@gmail.com', api_key: str = '3a82b96dc21a79d573de046812f2e1187508',enrichment_trials: int = 100, workers: int = 15, run_enrichment:bool = True, enrichment_cutoffs:list = [[-1,0], [0,5], [5,15], [15,50], [50,100000]], plot_background_color:str = 'gray', plot_query_color: str = 'red', plot_fontface:str = 'Avenir', plot_fontsize:int = 14, savepath:Any = False, verbose:int = 0) -> (pd.DataFrame, dict, dict): # type: ignore
     """
     Searches PubMed for comention of genes within articles related to a given field and
     performs a randomization test to compute Z-scores for observed mention counts.
 
     Args:
-        query (list): A list of genes/other words to query in PubMed.
-        keyword (str): A keyword so search with (i.e. "Type 2 Diabetes")
-        field (str, optional): The field within the PubMed article to search. Defaults to "all".
-        email (str, optional): The email address associated with the Entrez account.
-        api_key (str, optional): The API key associated with the Entrez account.
-        enrichment_trials (int, optional): The number of random trials to perform for calculating enrichment. Default is 100.
-        cores (int, optional): Number of workers for querying PubMed. Default is 15.
-        run_enrichment (bool, optional): False user only wants query co-mentions without enrichment. Default is True.
-        enrichment_cutoffs (list, optional): Cutoffs for enrichment analyses. Logic = >1st number, <=2nd number. Default is [[-1,0], [0,5], [5,15], [15,50], [50,100000]].
-        plot_background_color (str, optional): Color for random samplings in histogram. Default = gray.
-        plot_query_color (str, optional): Color for query findings in histogram. Default = red.
-        plot_fontface (str, optional): Fontface for plot. Default = Avenir.
-        plot_fontsize (int, optional): Font size for plot. Default = 14.
-        savepath (Any, optional): Path to save files. If undeclared, files are not saved and only returned.
+        - query (list): A list of genes/other words to query in PubMed.
+        - keyword (str): A keyword so search with (i.e. "Type 2 Diabetes")
+        - custom_terms (str): A custom search query for PubMed. Function will add and "AND" to the end of the gene and then add your custom term after. For example, the custom_term = '(("adipose") OR ("diabetes")) AND (("gene") OR ("protein"))' would produce a search of '("{gene}") AND (("adipose") OR ("diabetes")) AND (("gene") OR ("protein"))'
+        - custom_background (Any, optional): A custom background gene list for colocalization analysis. Defaults to 'ensembl'. Options include 'string_v10.0', 'string_v11.0', 'string_v11.5', 'string_v12.0', 'ensembl', 'reactome', or a user-defined list. STRING versions will use edges with weight > 0.15
+        - field (str, optional): The field within the PubMed article to search. Defaults to "all".
+        - email (str, optional): The email address associated with the Entrez account.
+        - api_key (str, optional): The API key associated with the Entrez account.
+        - enrichment_trials (int, optional): The number of random trials to perform for calculating enrichment. Default is 100.
+        - workers (int, optional): Number of workers for querying PubMed. Default is 15.
+        - run_enrichment (bool, optional): False user only wants query co-mentions without enrichment. Default is True.
+        - enrichment_cutoffs (list, optional): Cutoffs for enrichment analyses. Logic = >1st number, <=2nd number. Default is [[-1,0], [0,5], [5,15], [15,50], [50,100000]].
+        - plot_background_color (str, optional): Color for random samplings in histogram. Default = gray.
+        - plot_query_color (str, optional): Color for query findings in histogram. Default = red.
+        - plot_fontface (str, optional): Fontface for plot. Default = Avenir.
+        - plot_fontsize (int, optional): Font size for plot. Default = 14.
+        - savepath (Any, optional): Path to save files. If undeclared, files are not saved and only returned.
+        - verbose (int, optional): Verbosity level. Default is 0.
+        
     Returns:
         pd.DataFrame : Dataframe of query words, number of co-mentions, and PMIDs.
         dict : Dictionary, where keys = enrichment_cutoff values and values = (number of query genes in subset, z_score)
         dict : Dictionary, where keys = enrichment_cutoff values and values = enrichment plot.
     """
+    print('Running PubMed CoMentions')
     output_name = keyword if keyword else custom_terms
     # Pull the query co_mentions with keyword
     query_comention_df = _fetch_query_pubmed(query, keyword, custom_terms, email, api_key, field, workers)

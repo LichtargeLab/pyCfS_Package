@@ -21,6 +21,7 @@ from skopt.callbacks import DeltaYStopper
 from sklearn.metrics import balanced_accuracy_score, roc_curve, RocCurveDisplay, auc
 from sklearn.model_selection import RepeatedStratifiedKFold, StratifiedKFold, cross_val_score
 from sklearn.feature_selection import RFE, RFECV
+import random
 
 import numpy as np
 import statsmodels.api as sm
@@ -702,6 +703,34 @@ def _optimize_hyperparameters(estimator: Any, params: dict, x_train: pd.DataFram
 
     return search.best_score_, search.best_params_, cv_result, cv_result_plot
 
+def _sample_hyperparameters(params:dict) -> dict:
+    """Randomly samples a value for each hyperparameter in the dictionary.
+    
+    Args:
+        hyperparams (dict): Dictionary of hyperparameters with Categorical and Real distributions.
+    
+    Returns:
+        dict: Dictionary of sampled hyperparameters.
+    """
+    sampled_params = {}
+
+    for key, dist in params.items():
+        if isinstance(dist, list):  # If value is a list, select a random choice directly
+            sampled_params[key] = random.choice(dist)
+        elif hasattr(dist, 'categories'):  # For Categorical
+            sampled_params[key] = random.choice(dist.categories)
+        elif hasattr(dist, 'low') and hasattr(dist, 'high'):  # For Real
+            if dist.prior == 'log-uniform':
+                # Sample log-uniform by exponentiating a uniformly sampled exponent
+                sampled_params[key] = np.exp(random.uniform(np.log(dist.low), np.log(dist.high)))
+            else:
+                # Sample from a uniform distribution
+                sampled_params[key] = random.uniform(dist.low, dist.high)
+        else:
+            raise ValueError(f"Unsupported distribution type for hyperparameter '{key}'.")
+
+    return sampled_params
+
 def _set_hyperparameters(estimator: Any, params: dict) -> Any:
     """
     Set the hyperparameters for the given model.
@@ -716,7 +745,7 @@ def _set_hyperparameters(estimator: Any, params: dict) -> Any:
     estimator.set_params(**params)
     return estimator
 
-def _optimize_features_hyperparameters(input_models: Any, rfe:bool, x_train:pd.DataFrame, y_train:pd.DataFrame, max_feature_ratio:float, cores:int) -> (Any, pd.DataFrame, dict, dict, dict, dict, dict): # type: ignore
+def _optimize_features_hyperparameters(input_models: Any, rfe:bool, x_train:pd.DataFrame, y_train:pd.DataFrame, max_feature_ratio:float, set_optimize_hyperparameters:bool, cores:int) -> (Any, pd.DataFrame, dict, dict, dict, dict, dict): # type: ignore
     """
     Optimize features and hyperparameters for each model.
 
@@ -731,6 +760,7 @@ def _optimize_features_hyperparameters(input_models: Any, rfe:bool, x_train:pd.D
     Returns:
         tuple: A tuple containing the final estimator, best results dataframe, RFE importances, RFE results, RFE results plot, Bayesian results, and Bayesian results plot.
     """
+
     # Get the estimators to test
     models_to_test = _validate_separate_input_models(input_models)
     # Set holder values
@@ -757,22 +787,33 @@ def _optimize_features_hyperparameters(input_models: Any, rfe:bool, x_train:pd.D
 
         # Perform Bayesian hyperparameter optimization
         params, estimator = _get_hyperparameter_search_space(model, len(selected_features))
-        best_score, best_params, cv_result, cv_plot = _optimize_hyperparameters(estimator, params, x_train, y_train, n_iter=50, n_splits=5, n_repeats=5, cores=cores)
-        best_results[model] = best_score
-        best_params_dict[model] = best_params
-        bayes_results[model] = cv_result
-        bayes_results_plot[model] = cv_plot
+        if set_optimize_hyperparameters:
+            params, estimator = _get_hyperparameter_search_space(model, len(selected_features))
+            best_score, best_params, cv_result, cv_plot = _optimize_hyperparameters(estimator, params, x_train, y_train, n_iter=50, n_splits=5, n_repeats=5, cores=cores)
+            best_results[model] = best_score
+            best_params_dict[model] = best_params
+            bayes_results[model] = cv_result
+            bayes_results_plot[model] = cv_plot
     # Merge best results and params for saving
-    best_result_df = pd.DataFrame({'Model': list(best_results.keys()), 'Best_AUROC': list(best_results.values())})
-    best_result_df = best_result_df.sort_values(by='Best_AUROC', ascending=False).reset_index(drop=True)
-    best_params_df = pd.DataFrame.from_dict(best_params_dict, orient='index').reset_index().rename(columns={'index': 'Model'})
-    best_df = best_result_df.merge(best_params_df, left_on='Model', right_on='Model', how='left')
+    if set_optimize_hyperparameters:
+        best_result_df = pd.DataFrame({'Model': list(best_results.keys()), 'Best_AUROC': list(best_results.values())})
+        best_result_df = best_result_df.sort_values(by='Best_AUROC', ascending=False).reset_index(drop=True)
+        best_params_df = pd.DataFrame.from_dict(best_params_dict, orient='index').reset_index().rename(columns={'index': 'Model'})
+        best_df = best_result_df.merge(best_params_df, left_on='Model', right_on='Model', how='left')
+        # Set the best model
+        best_model = best_result_df.loc[0, 'Model']
+        _, best_model_estimator = _get_hyperparameter_search_space(best_model, len(selected_features))
+        best_model_params = best_params_dict[best_model]
+        best_model_params = best_params_dict[best_model]
+        final_estimator = _set_hyperparameters(best_model_estimator, best_model_params)
+    else:
+        best_df = pd.DataFrame()
+        best_params_df = pd.DataFrame()
+        random_parms = _sample_hyperparameters(params)
+        final_estimator = _set_hyperparameters(estimator, random_parms)
+        best_model = model
 
     # Set the best model
-    best_model = best_result_df.loc[0, 'Model']
-    _, best_model_estimator = _get_hyperparameter_search_space(best_model, len(selected_features))
-    best_model_params = best_params_dict[best_model]
-    final_estimator = _set_hyperparameters(best_model_estimator, best_model_params)
     final_estimator.fit(x_train, y_train)
 
     return final_estimator, best_model, selected_features, best_df, rfe_importances, rfe_results, rfe_results_plot, bayes_results, bayes_results_plot, models_to_test
@@ -979,7 +1020,7 @@ def _plot_histo_w_or(predictions_gene: pd.DataFrame, bins:int = 50, xlim_lower:f
 
     return image, or_df, ks_p
 
-def risk_prediction(feature_matrix: pd.DataFrame, train_samples: pd.DataFrame, test_samples: pd.DataFrame, models: Any = 'RF', rfe:bool = False, rfe_min_feature_ratio:float = 0.5, cores:int = 1, savepath: str = None, verbose:int = 0) -> (Image, Image, pd.DataFrame): # type: ignore
+def risk_prediction(feature_matrix: pd.DataFrame, train_samples: pd.DataFrame, test_samples: pd.DataFrame, models: Any = 'RF', optimize_hyperparameters:bool = True, rfe:bool = False, rfe_min_feature_ratio:float = 0.5, cores:int = 1, savepath: str = None, verbose:int = 0) -> (Image, Image, pd.DataFrame): # type: ignore
     """
     Perform risk prediction using machine learning models.
 
@@ -1007,7 +1048,7 @@ def risk_prediction(feature_matrix: pd.DataFrame, train_samples: pd.DataFrame, t
     x_test, y_test = _generate_x_y_matrices(feature_matrix, test_samples)
 
     # Optimize the hyperparameters
-    final_estimator, best_model, selected_features, best_optimization_df, rfe_importances, rfe_results, rfe_results_plot, bayes_results, bayes_results_plot, tested_models =  _optimize_features_hyperparameters(models, rfe, x_train, y_train, rfe_min_feature_ratio, cores)
+    final_estimator, best_model, selected_features, best_optimization_df, rfe_importances, rfe_results, rfe_results_plot, bayes_results, bayes_results_plot, tested_models =  _optimize_features_hyperparameters(models, rfe, x_train, y_train, rfe_min_feature_ratio, optimize_hyperparameters, cores)
 
     ## Get intra-sample model performance metrics
     # Cross-Validation
@@ -1039,7 +1080,8 @@ def risk_prediction(feature_matrix: pd.DataFrame, train_samples: pd.DataFrame, t
         os.makedirs(new_savepath, exist_ok=True)
 
         # Save the bayesian optimization results
-        best_optimization_df.to_csv(new_savepath + 'best_optimization_results.csv', index=False)
+        if optimize_hyperparameters:
+            best_optimization_df.to_csv(new_savepath + 'best_optimization_results.csv', index=False)
 
         # Save training and testing intermediate split files
         input_file_savepath = new_savepath + 'IntermediateFiles/'
@@ -1062,10 +1104,11 @@ def risk_prediction(feature_matrix: pd.DataFrame, train_samples: pd.DataFrame, t
             if rfe_results_plot[model] is not None:
                 rfe_results_plot[model].save(rfe_savepath + 'rfe_results_plot.png')
             # Save the bayesian results
-            bayes_savepath = model_savepath + 'BayesianOptimization/'
-            os.makedirs(bayes_savepath, exist_ok=True)
-            bayes_results[model].to_csv(bayes_savepath + 'bayes_optimization_results.csv', index=False)
-            bayes_results_plot[model].save(bayes_savepath + 'bayes_optimization_results_plot.png')
+            if optimize_hyperparameters:
+                bayes_savepath = model_savepath + 'BayesianOptimization/'
+                os.makedirs(bayes_savepath, exist_ok=True)
+                bayes_results[model].to_csv(bayes_savepath + 'bayes_optimization_results.csv', index=False)
+                bayes_results_plot[model].save(bayes_savepath + 'bayes_optimization_results_plot.png')
             # Save the best model results
             if model == best_model:
                 testing_savepath = model_savepath + 'TestingSamples/'
@@ -1083,6 +1126,11 @@ def risk_prediction(feature_matrix: pd.DataFrame, train_samples: pd.DataFrame, t
                 or_df.to_csv(testing_savepath + 'or_df.csv', index=False)
                 eval_dist_plot.save(testing_savepath + 'eval_distribution_plot.png')
                 val_auroc_curve.save(testing_savepath + 'eval_auroc_curve.png')
+                # Save the model parameters
+                with open(testing_savepath + 'model_parameters.txt', 'w') as f:
+                    model_params = final_estimator.get_params()
+                    for key, value in model_params.items():
+                        f.write(f'{key}: {value}\n')
                 # Save the final model performance metrics
                 with open(testing_savepath + 'model_performance_metrics.txt', 'w') as f:
                     f.write(f'Intra-Training Sample 10x Cross-Validation ROC-AUC: {cv_score.mean()}\n')

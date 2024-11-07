@@ -280,16 +280,20 @@ def lollipop_plot(variants: pd.DataFrame, gene: str, group:str = 'both', case_po
     Parameters:
     - variants (pd.DataFrame): DataFrame containing variant data.
     - gene (str): Gene of interest.
+    - group (str, optional): Group to plot. Must be one of 'case', 'control', or 'both'. Default is 'both'.
     - case_pop (int, optional): Number of cases in the variant file. If not provided, it will be calculated based on the data.
     - cont_pop (int, optional): Number of controls in the variant file. If not provided, it will be calculated based on the data.
     - max_af (float, optional): Maximum allele frequency threshold for filtering variants. Default is 1.0.
+    - min_af (float, optional): Minimum allele frequency threshold for filtering variants. Default is 0.0.
     - ea_lower (float, optional): Lower bound for effect size threshold. Default is 0.0.
     - ea_upper (float, optional): Upper bound for effect size threshold. Default is 100.0.
+    - consequence (str, optional): Consequence type to filter variants by. Default is 'missense_variant|frameshift_variant|stop_gained|stop_lost|start_lost'.
     - show_domains (bool, optional): Whether to show domain annotations on the lollipop plot. Default is True.
     - ac_scale (str, optional): Scale for the allele count axis. Default is 'linear'.
     - ea_color (str, optional): Color scheme for effect size. Default is 'prismatic'.
     - domain_min_dist (int, optional): Minimum distance between domain annotations. Default is 20.
     - savepath (str, optional): Path to save the lollipop plot image. If not provided, the plot will not be saved.
+    - verbose (int, optional): Verbosity level. Default is 0.
 
     Returns:
     - plot (Image): Lollipop plot image.
@@ -700,16 +704,30 @@ def protein_structures(variants: pd.DataFrame, gene: str, run_scw:bool = True, m
     Generate AlphaFold protein structures for the given variants and save them to a specified path.
 
     Args:
-        variants (pd.DataFrame): DataFrame containing variant information.
-        gene (str): Gene name for which protein structures are generated.
-        savepath (str): Path to save the generated protein structures.
-        max_af (float, optional): Maximum allele frequency threshold for variant filtering. Defaults to 1.0.
-        min_af (float, optional): Minimum allele frequency threshold for variant filtering. Defaults to 0.0.
-        ea_lower (int, optional): Lower bound of the effect allele count threshold for variant filtering. Defaults to 0.
-        ea_upper (int, optional): Upper bound of the effect allele count threshold for variant filtering. Defaults to 100.
+        - variants (pd.DataFrame): DataFrame containing variant information.
+        - gene (str): Gene name for which protein structures are generated.
+        - run_scw (bool, optional): Whether to run SCW analysis. Default is True.
+        - max_af (float, optional): Maximum allele frequency threshold for variant filtering. Default is 1.0.
+        - min_af (float, optional): Minimum allele frequency threshold for variant filtering. Default is 0.0.
+        - ea_lower (int, optional): Lower bound of the effect allele count threshold for variant filtering. Default is 0.
+        - ea_upper (int, optional): Upper bound of the effect allele count threshold for variant filtering. Default is 100.
+        - consequence (str, optional): Consequence type to filter variants by. Default is 'missense_variant|frameshift_variant|stop_gained|stop_lost|start_lost'.
+        - scw_chain (str, optional): Chain identifier for SCW analysis. Default is 'A'.
+        - scw_plddt_cutoff (int, optional): pLDDT cutoff value for SCW analysis. Default is 50.
+        - scw_min_dist_cutoff (int, optional): Minimum distance cutoff for SCW analysis. Default is 4.
+        - scw_max_dist_cutoff (int, optional): Maximum distance cutoff for SCW analysis. Default is 12.
+        - cores (int, optional): Number of cores to use for parallel processing. Default is 1.
+        - savepath (str): Path to save the generated protein structures.
+
+
 
     Returns:
-        None
+        - pd.DataFrame : Clustering enrichment for all variants meeting criteria (both cases and controls)
+        - pd.DataFrame : Clustering enrichment for case variants meeting criteria
+        - pd.DataFrame : Clustering enrichment for control variants meeting criteria
+        - Image : Clustering enrichment plot for all variants meeting criteria (both cases and controls)
+        - Image : Clustering enrichment plot for case variants meeting criteria
+        - Image : Clustering enrichment plot for control variants meeting criteria
     """
     # Separate into case and control variants
     case_vars, cont_vars = _filter_variants(variants, gene, max_af, min_af, ea_lower, ea_upper, consequence)

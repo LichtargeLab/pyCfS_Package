@@ -729,19 +729,19 @@ def prioritize_genes(query: list, result_dict:dict = {}, result_path:str = "", r
     Annotates and ranks a list of queries based on various experimental results.
 
     Parameters:
-    query (list): List of queries to be annotated and ranked.
-    result_dict (dict, optional): Dictionary containing experimental results. Defaults to an empty dictionary.
-    result_path (str, optional): Path to load experimental results from. Defaults to an empty string.
-    result_experiments (list, optional): List of experiments to consider for annotation. Defaults to an empty list.
-    score_method (str, optional): Method to use for scoring. Defaults to 'rank'.
-    p_value_col (str, optional): Column name for p-values. Defaults to 'fdr'.
-    or_directories (list, optional): List of directories for odds ratios. Defaults to an empty list.
-    or_threshold (float, optional): Threshold for odds ratios. Defaults to 0.1.
-    mgi_groups (list, optional): List of MGI groups. Defaults to ['all'].
-    depmap_ranking (str, optional): Method for DepMap ranking. Defaults to 'tumor_suppressor'.
-    drug_source (str, optional): Source for drug-gene interactions. Defaults to 'all'.
-    show_indiv_scores (bool, optional): If True, individual scores will be shown in the output DataFrame. Defaults to True.
-    savepath (str, optional): Path to save the annotated and ranked DataFrame. Defaults to None.
+    - query (list): List of queries to be annotated and ranked.
+    - result_dict (dict, optional): Dictionary containing experimental results. Defaults to an empty dictionary.
+    - result_path (str, optional): Path to load experimental results from. Defaults to an empty string.
+    - result_experiments (list, optional): List of experiments to consider for annotation. Defaults to an empty list.
+    - score_method (str, optional): Method to use for scoring. Defaults to 'rank'. Options include 'rank' or 'binary'.
+    - p_value_col (str, optional): Column name for p-values. Defaults to 'fdr'.
+    - or_directories (list, optional): List of directories for odds ratios. Defaults to an empty list.
+    - or_threshold (float, optional): Threshold for odds ratios. Defaults to 0.1.
+    - mgi_groups (list, optional): List of MGI groups. Defaults to ['all'].
+    - depmap_ranking (str, optional): Method for DepMap ranking. Defaults to 'tumor_suppressor'. Options include 'tumor_suppressor' or 'oncogene'.
+    - drug_source (str, optional): Source for drug-gene interactions. Defaults to 'all'.
+    - show_indiv_scores (bool, optional): If True, individual scores will be shown in the output DataFrame. Defaults to True.
+    - savepath (str, optional): Path to save the annotated and ranked DataFrame. Defaults to None.
 
     Returns:
     pd.DataFrame: The annotated and ranked DataFrame.
