@@ -1,5 +1,5 @@
 # pyCfS
-Version 0.1.2 <br>
+Version 0.1.3 <br>
 The aggregation of Lichtarge Lab genotype-phenotype validation experiments<br>
 
 ## Installation
@@ -17,7 +17,7 @@ conda activate pyCfS<br>
 conda install -c conda-forge r-base r-ggplot2 r-deldir r-rcppeigen r-interp rpy2 rasterio r-tzdb r-vroom r-readr r-cowplot r-tidyverse <br>
 
 ### Install pyCfS (in anaconda environment)
-pip install git+https://github.com/kevwilhelm95/pyCfS.git <br>
+pip install git+https://github.com/LichtargeLab/pyCfS_Package.git <br>
 (Ensure pip is pointing to anaconda environment, if it is not, use anaconda environment pip: /path/to/env/../bin/pip install git+...) <br>
 
 #### Examples
@@ -34,6 +34,7 @@ See "example.ipynb" for help
     - `functional_clustering`
     - `statistical_combination`
 - `pyCFS.GoldStandards`
+    - `generate_ot_goldstandards`
     - `string_enrichment`
     - `goldstandard_overlap`
     - `ndiffusion`
@@ -129,6 +130,21 @@ Statistical p-value combination methods, including Cauchy, MCM, CMC, Minimum p, 
 
 
 ## pyCFS.GoldStandards
+### `generate_ot_goldstandards()`
+Identifies high-confidence genes associated with a given phenotype by pulling data from the OpenTargets platform.
+#### Parameters
+- `efo_id` (str): The EFO ID for a given phenotype. Must contain "EFO_####" or "MONDO_#####". Can be found at https://platform.opentargets.org/
+- **Optional**:
+    - `min_goldstandards` (int) : Minimum goldstandards to pull. If filtering for coding variants, the genetic and overall bins (1.0-0.8, 0.6-0.8, 0.4-0.6, 0.2-0.4, 0.0-0.2) will be searched in full until we have a gold standard list greater than the minimum. If min_genetic or min_overall_association is set, this will be overridden. (Default = 10)
+    - `min_genetic_association` (float) : The minimum level of evidence for genetic scores to be considered. 0.0 means no evidence, 1.0 means extremely strong evidence. If > 0.0, min_goldstandards will be overridden. (Default = 0.0)
+    - `min_overall_association` (flaot) : The minimum level of evidence for overall scores to be considered. 0.0 means no evidence, 1.0 means extremely strong evidence. If > 0.0, min_goldstandards will be overridden. (Default = 0.0)
+    - `filter_for_coding` (bool) : Toggle to check for coding variant evidence, determined by coding variant lead SNPs in GWAS (OT Genetics) or Gene Burden testing. If False, will top genes according to min_goldstandards or all genes determined by min_genetic_association/min_overall_association. (Default = True)
+    - `savepath` (str): Path to save files.
+#### Returns
+- `list` : List of gold standard genes
+- `pd.DataFrame`: Dataframe containing supporting evidence and filtering criteria of gold standard set.
+
+
 ### `string_enrichment()`
 Assess gene set network connectivity and functional enrichment using the STRING API. Returns the same results as if you were using the web-browser website (string-db.org).
 #### Parameters:
