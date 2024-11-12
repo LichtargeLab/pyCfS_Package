@@ -43,6 +43,489 @@ warnings.filterwarnings("ignore", category=UndefinedMetricWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
+#region OpenTargets Gold Standard generator
+def _validate_efo_term(efo_id:str) -> None:
+    """
+        Validate the given EFO or MONDO term ID.
+
+        This function checks if the provided ID starts with "EFO_" or "MONDO_".
+        If the ID does not start with either of these prefixes, a ValueError is raised.
+
+        Args:
+            efo_id (str): The EFO or MONDO term ID to validate.
+
+        Raises:
+            ValueError: If the provided ID does not start with "EFO_" or "MONDO_".
+    """
+    # Check if EFO or MONDO in ID
+    if efo_id.startswith("EFO_") or efo_id.startswith("MONDO_"):
+        pass
+    else:
+        raise ValueError("Invalid EFO ID - Please provide a valid EFO ('EFO_######') or MONDO ID ('MONDO_######')")
+
+def _def_opentargets_base_url() -> str:
+    """
+    Returns the base URL for the Open Targets API.
+
+    This function provides the base URL for accessing the Open Targets API,
+    which is used for querying biomedical data. API documentation - https://platform-docs.opentargets.org/data-access/graphql-api
+
+    Returns:
+        str: The base URL for the Open Targets API.
+    """
+    return "https://api.platform.opentargets.org/api/v4/graphql"
+
+def _query_target_disease_associations(efo_id: str) -> pd.DataFrame:
+    """
+        Queries the Open Targets platform for target-disease associations based on the provided EFO ID.
+        Args:
+            efo_id (str): Experimental Factor Ontology (EFO) ID of the disease to query.
+        Returns:
+            pd.DataFrame: A DataFrame containing the target-disease association data, including target IDs, approved symbols, overall scores, datatype scores, and datasource scores.
+            str: The name of the disease associated with the provided EFO ID.
+        Raises:
+            ValueError: If the HTTP request to the Open Targets platform fails.
+    """
+    base_url = _def_opentargets_base_url()
+    
+    query = f'''
+        query associatedTargets {{
+            disease(efoId: "{efo_id}") {{
+                id
+                name
+                associatedTargets(page: {{ index: 0, size: 10000 }}) {{
+                    count
+                    rows {{
+                        target {{
+                            id
+                            approvedSymbol
+                        }}
+                        score
+                        datatypeScores {{
+                            id
+                            score
+                        }}
+                        datasourceScores {{
+                            id
+                            score
+                        }}
+                    }}
+                }}
+            }}
+        }}
+    '''
+    response = requests.post(base_url, json={'query': query})
+    if response.status_code != 200:
+        # Wait for 1 minute and retry
+        time.sleep(60)
+        response = requests.post(base_url, json={'query': query})
+        if response.status_code != 200:
+            raise ValueError("Error: " + response.text)
+    
+    data = response.json()
+    disease = data['data']['disease']['name']
+    data_parsed = data['data']['disease']['associatedTargets']
+    target_data = data_parsed['rows']
+
+    # Parse each row in target_data
+    rows_list = []
+    for row in target_data:
+        # Extract basic target info and score
+        target_id = row['target']['id']
+        approved_symbol = row['target']['approvedSymbol']
+        score = row['score']
+        
+        # Extract scores for each datatype and datasource as a flattened list
+        datatype_scores = {ds['id']: ds['score'] for ds in row.get('datatypeScores', [])}
+        datasource_scores = {ds['id']: ds['score'] for ds in row.get('datasourceScores', [])}
+        
+        # Combine all extracted data into one dictionary
+        row_data = {
+            'target_id': target_id,
+            'approved_symbol': approved_symbol,
+            'overall_score': score,
+            **datatype_scores,
+            **datasource_scores
+        }
+        
+        rows_list.append(row_data)
+
+    # Create DataFrame from rows_list
+    target_df = pd.DataFrame(rows_list)
+    return target_df, disease
+
+def _plot_association_scores(df: pd.DataFrame, bins:list = [0, 0.2, 0.4, 0.6, 0.8, 1.0]) -> Image:
+    """
+        Plots the association scores between overall association scores and genetic association scores.
+        Args:
+            df (pd.DataFrame): DataFrame containing the data with 'overall_score' and 'genetic_association' columns.
+            bins (list, optional): List of bin edges for categorizing the scores. Defaults to [0, 0.2, 0.4, 0.6, 0.8, 1.0].
+        Returns:
+            Image: An image object containing the plotted bar chart.
+    """
+    # Define custom colors for each bin
+    colors = ['blue', 'lightblue', 'lightgray', 'lightcoral', 'red']
+    
+    # Create bin labels
+    labels = []
+    for bin in bins:
+        try:
+            i = bins.index(bin)
+            if bin != 0.8:
+                labels.append(f'[{bin}, {bins[i+1]})')
+            else:
+                labels.append(f'[{bin}, {bins[i+1]}]')
+        except IndexError:
+            continue
+    
+    # Group labels
+    df['globalScore_group'] = pd.cut(
+        df['overall_score'], bins=bins, labels=labels, include_lowest=True, right=False
+    )
+    df['geneticAssociations_group'] = pd.cut(
+        df['genetic_association'], bins=bins, labels=labels, include_lowest=True, right=False
+    )
+    
+    # Calculate counts and percentages
+    counts = df.groupby(['globalScore_group', 'geneticAssociations_group']).size().unstack()
+    percentages = counts.divide(counts.sum(axis=1), axis=0)
+    labels = percentages.index
+    
+    # Plot setup
+    fig, ax = plt.subplots()
+    bottom = [0] * len(labels)
+
+    # Keep track of used positions for each x-tick to detect overlaps
+    used_positions = {i: [] for i in range(len(labels))}
+
+    # Plot each bar segment with colors and labels
+    for column_idx, (column, color) in enumerate(zip(percentages.columns, colors)):
+        ax.bar(labels, percentages[column], bottom=bottom, label=column, color=color, edgecolor='black', linewidth=0.5)
+        
+        for i, (value, total) in enumerate(zip(counts[column], bottom)):
+            if value <= 0:
+                continue
+
+            # Calculate y-position and check for overlap
+            y_position = total + percentages[column][i] / 2
+            # Check for overlap with previously used positions at the same x-tick
+            adjustment = 0
+            for pos in used_positions[i]:
+                if abs(y_position - pos) < 0.06:  # Adjust this threshold as needed
+                    adjustment += 0.06  # Increment adjustment to avoid overlap
+            y_position += adjustment
+            if y_position < 0.03:
+                y_position = 0.03
+
+            # Add the position to used positions list for this x-tick
+            used_positions[i].append(y_position)
+
+            # Add the text label
+            text_color = 'black' if color != 'blue' else 'white'
+            ax.text(
+                i, y_position,
+                f"{column} \n (n={value})",
+                ha='center', va='center', size=8, color=text_color
+            )
+        
+        # Update the bottom values for stacking
+        bottom += percentages[column]
+
+    # Reverse the legend order
+    handles, labels = ax.get_legend_handles_labels()
+    ax.legend(
+        reversed(handles),
+        reversed(labels),
+        title="Genetic Association Score",
+        bbox_to_anchor=(1.04, 0.5),
+        loc="center left",
+        borderaxespad=0
+    )
+    
+    # Add labels and title
+    plt.ylabel('% of Genes by Genetic Association Score')
+    plt.xlabel('Overall Association Score')
+    plt.title('Genetic Association Score by Overall Association Score')
+    plt.tight_layout()
+    
+    # Save plot to image
+    buffer = io.BytesIO()
+    plt.savefig(buffer, format='png', dpi=300)
+    buffer.seek(0)
+    image = Image.open(buffer)
+    plt.close()
+    return image
+
+def _check_coding_variants(df: pd.DataFrame, efo_id: str) -> list:
+    """
+        Check for coding variant associations for a given disease using the Open Targets API.
+        Parameters:
+        df (pd.DataFrame): DataFrame containing gene IDs in a column named 'target_id'.
+        efo_id (str): EFO ID of the disease to query.
+        Returns:
+        pd.DataFrame: DataFrame containing the evidence of coding variant associations with the following columns:
+            - target_id: ID of the target gene.
+            - approved_symbol: Approved symbol of the target gene.
+            - disease_id: ID of the disease.
+            - disease_name: Name of the disease.
+            - datasource_id: ID of the data source.
+            - odds_ratio: Odds ratio of the variant.
+            - odds_ratio_ci_lower: Lower confidence interval of the odds ratio.
+            - odds_ratio_ci_upper: Upper confidence interval of the odds ratio.
+            - variant_effect: Effect of the variant.
+            - beta: Beta value of the variant.
+            - beta_ci_lower: Lower confidence interval of the beta value.
+            - beta_ci_upper: Upper confidence interval of the beta value.
+            - variant_id: ID of the variant.
+            - variant_rs_id: RS ID of the variant.
+            - direction_on_trait: Direction of the variant's effect on the trait.
+            - variant_func_consequence_label: Functional consequence label of the variant.
+            - literature: Literature references associated with the variant.
+        Raises:
+        ValueError: If the API request fails.
+    """
+    # Get gene IDs
+    gene_ids = df['target_id'].tolist()  # List of gene IDs
+    gene_ids = [f'"{gene_id}"' for gene_id in gene_ids]  # Wrap gene IDs in quotes
+
+    # Query Open Targets API to check for coding variant associations
+    base_url = _def_opentargets_base_url()
+    query = f'''
+        query targetDiseaseCodingVariantEvidence {{
+            disease(efoId: "{efo_id}") {{
+                id
+                name
+                evidences(ensemblIds: [{",".join(gene_ids)}], datasourceIds: ["ot_genetics_portal", "gene_burden"], size: 10000) {{
+                    rows {{
+                        target {{
+                            id
+                            approvedSymbol
+                        }}
+                        disease {{
+                            id
+                            name
+                        }}
+                        datasourceId
+                        oddsRatioConfidenceIntervalLower
+                        oddsRatioConfidenceIntervalUpper
+                        oddsRatio
+                        beta
+                        betaConfidenceIntervalLower
+                        betaConfidenceIntervalUpper
+                        variantId
+                        variantRsId
+                        literature
+                        variantAminoacidDescriptions
+                        variantFunctionalConsequence {{
+                            label
+                        }}
+                        variantEffect
+                        directionOnTrait
+                    }}
+                }}
+            }}
+        }}
+    '''
+
+    response = requests.post(base_url, json={'query': query})
+    if response.status_code != 200:
+        # Wait for 1 minute and retry
+        time.sleep(60)
+        response = requests.post(base_url, json={'query': query})
+        if response.status_code != 200:
+            raise ValueError("Error: " + response.text)
+
+    data = response.json()
+    disease_name = data['data']['disease']['name']
+    evidences = data['data']['disease']['evidences']['rows']
+    # Parse each row in evidences
+    rows_list = []
+    for evidence in evidences:
+        # Basic information
+        target_id = evidence['target']['id']
+        approved_symbol = evidence['target']['approvedSymbol']
+        disease_id = evidence['disease']['id']
+        disease_name = evidence['disease']['name']
+        datasource_id = evidence['datasourceId']
+        odds_ratio = evidence.get('oddsRatio')
+        odds_ratio_ci_lower = evidence.get('oddsRatioConfidenceIntervalLower')
+        odds_ratio_ci_upper = evidence.get('oddsRatioConfidenceIntervalUpper')
+        beta = evidence.get('beta')
+        beta_ci_lower = evidence.get('betaConfidenceIntervalLower')
+        beta_ci_upper = evidence.get('betaConfidenceIntervalUpper')
+        variant_id = evidence.get('variantId')
+        variant_rs_id = evidence.get('variantRsId')
+        literature = evidence.get('literature')
+        if isinstance(literature, list):
+            literature = ":".join(literature)
+        variant_effect = evidence.get('variantEffect')
+        direction_on_trait = evidence.get('directionOnTrait')
+        
+        # Handle nested fields like variantFunctionalConsequence and variantFunctionalConsequenceFromQtlId
+        variant_func_consequence = evidence.get('variantFunctionalConsequence')
+        variant_func_consequence_label = variant_func_consequence.get('label') if variant_func_consequence else None
+        
+        # Collect data into a dictionary
+        row_data = {
+            'target_id': target_id,
+            'approved_symbol': approved_symbol,
+            'disease_id': disease_id,
+            'disease_name': disease_name,
+            'datasource_id': datasource_id,
+            'odds_ratio': odds_ratio,
+            'odds_ratio_ci_lower': odds_ratio_ci_lower,
+            'odds_ratio_ci_upper': odds_ratio_ci_upper,
+            'variant_effect': variant_effect,
+            'beta': beta,
+            'beta_ci_lower': beta_ci_lower,
+            'beta_ci_upper': beta_ci_upper,
+            'variant_id': variant_id,
+            'variant_rs_id': variant_rs_id,
+            'direction_on_trait': direction_on_trait,
+            'variant_func_consequence_label': variant_func_consequence_label,
+            'literature': literature,
+        }
+        rows_list.append(row_data)
+    
+    # Create DataFrame from rows_list
+    evidence_df = pd.DataFrame(rows_list)
+    return evidence_df
+
+def _prioritize_goldstandards(df: pd.DataFrame, efo_id: str, min_goldstandards: int) -> (pd.DataFrame, list): # type: ignore
+    """
+        Prioritize gold standard genes based on genetic association and global score.
+
+        This function filters and prioritizes genes from a given DataFrame based on their genetic association 
+        and global score. It looks for coding variant evidence in the genes and returns a DataFrame of prioritized 
+        genes along with a list of these genes and the threshold used for prioritization.
+
+        Parameters:
+        df (pd.DataFrame): The input DataFrame containing gene data.
+        efo_id (str): The EFO (Experimental Factor Ontology) ID to check for coding variants.
+        min_goldstandards (int): The minimum number of gold standard genes required.
+
+        Returns:
+        pd.DataFrame: A DataFrame containing the prioritized genes with their associated data.
+        list: A list of prioritized gene symbols.
+        str: The threshold used for genetic association and global score.
+    """
+    # Generate matrix of global and genetic association scores
+    coding_var_genes = []
+    coding_var_rows = []
+    min_genetic_association = None
+    min_global_score = None
+    # Loop through data to find coding variant evidence
+    for genetic_association in ['[0.8, 1.0]', '[0.6, 0.8)', '[0.4, 0.6)', '[0.2, 0.4)', '[0.0, 0.2)']:
+        for global_score in ['[0.8, 1.0]', '[0.6, 0.8)', '[0.4, 0.6)', '[0.2, 0.4)', '[0.0, 0.2)']:
+            min_genetic_association = genetic_association
+            min_global_score = global_score
+            # Grab subset of data
+            try:
+                sub_df = df[(df['geneticAssociations_group'].astype(str) == genetic_association) & (df['globalScore_group'].astype(str) == global_score)]
+                if sub_df.empty:
+                    continue
+            except KeyError as e:
+                continue
+            # Loop through each gene to see if there is coding variant evidence
+            for gene in sub_df['approved_symbol']:
+                gene_data = df[df['approved_symbol'] == gene]
+                data_evidences = _check_coding_variants(gene_data, efo_id)
+                if data_evidences.empty:
+                    continue
+                # Check for coding variant evidence
+                if "gene_burden" in data_evidences['datasource_id'].tolist() or data_evidences['variant_func_consequence_label'].str.contains('missense_variant|inframe_deletion|inframe_insertion|frameshift_variant', na = False).any():
+                    # Grab coding variant gene burden literature evidence
+                    gene_burden_literature = data_evidences[data_evidences['datasource_id'] == 'gene_burden']['literature'].unique().tolist()
+                    gene_burden_literature = [x for x in gene_burden_literature if x is not None]
+                    gene_burden_literature = ":".join(gene_burden_literature) if len(gene_burden_literature) > 0 else None
+                    # Grab GWAS missense variant literature evidence
+                    missense_variant_literature = data_evidences[data_evidences['variant_func_consequence_label'].str.contains('missense_variant|inframe_deletion|inframe_insertion|frameshift_variant', na = False)]['literature'].unique().tolist()
+                    missense_variant_literature = [x for x in missense_variant_literature if x is not None]
+                    missense_variant_literature = ":".join(missense_variant_literature) if len(missense_variant_literature) > 0 else None
+                    # Add the gene to the coding_var_genes list
+                    coding_var_genes.append(gene)
+                    # Create row for output df
+                    coding_var_rows.append({
+                        'approved_symbol': gene,
+                        'genetic_association': gene_data['genetic_association'].values[0],
+                        'overall_score': gene_data['overall_score'].values[0],
+                        'gene_burden_literature': gene_burden_literature,
+                        'coding_variant_gwas_literature': missense_variant_literature,
+                        'genetic_association_group': genetic_association,
+                        'overall_score_group': global_score
+                    })
+            if len(coding_var_genes) >= min_goldstandards:
+                break
+        if len(coding_var_genes) >= min_goldstandards:
+            break
+    coding_var_evidence_df = pd.DataFrame(coding_var_rows)
+    threshold = f"Genetic Association Score: {min_genetic_association}, Overall Association Score: {min_global_score}"
+    return coding_var_evidence_df, coding_var_genes, threshold
+
+def generate_ot_goldstandards(efo_id:str, min_goldstandards:int = 10, min_genetic_association:float = 0.0, min_overall_association:float = 0.0, filter_for_coding:bool = True, savepath:Any = False) -> (list, pd.DataFrame): # type: ignore
+    """
+        Generate a gold standard list of genes associated with a given EFO (Experimental Factor Ontology) term using the OpenTargets API.
+
+        Args:
+            efo_id (str): The EFO ID for the disease or phenotype of interest.
+            min_goldstandards (int, optional): Minimum number of gold standard genes to prioritize. Defaults to 10.
+            filter_for_coding (bool, optional): Whether to filter for coding variant evidence. Defaults to True.
+            savepath (Any, optional): Path to save the results. If False, results are not saved. Defaults to False.
+
+        Returns:
+            list: A list of prioritized gold standard gene symbols.
+            pd.DataFrame: A DataFrame containing the prioritized gold standard genes and their association scores.
+
+        Notes:
+            API documentation - https://platform-docs.opentargets.org/data-access/graphql-api
+    """
+    # Verify EFO id
+    _validate_efo_term(efo_id)
+
+    # Query associations from OpenTargets API
+    gene_associations, disease = _query_target_disease_associations(efo_id)
+    gene_associations = gene_associations.sort_values(by = ['genetic_association', 'overall_score'], ascending = False).reset_index(drop = True)
+
+    # Plot overall association scores against genetic scores
+    image = _plot_association_scores(gene_associations)
+
+    # Filter associations for genetic association and overall score
+    gene_associations_prior = gene_associations[(gene_associations['genetic_association'] >= min_genetic_association) & (gene_associations['overall_score'] >= min_overall_association)]
+    if gene_associations_prior.empty:
+        raise ValueError("No genes found with the specified genetic association and overall score thresholds")
+    if min_genetic_association > 0.0 or min_overall_association > 0.0:
+        min_goldstandards = 10_000 # Set to essentially no limit on the number of values
+
+    # Prioritize top genes by association and coding variant evidence
+    if filter_for_coding:
+        prioritized_goldstandards_df, prioritized_goldstandards, threshold = _prioritize_goldstandards(gene_associations_prior, efo_id, min_goldstandards)
+    else:
+        prioritized_goldstandards_df = gene_associations.head(min_goldstandards)
+        prioritized_goldstandards = prioritized_goldstandards_df['approved_symbol'].tolist()
+        threshold = "No filtering for coding variant evidence"
+
+    if savepath:
+        savepath = _fix_savepath(savepath)
+        new_savepath = os.path.join(savepath, 'OpenTargets_GoldStandard/')
+        os.makedirs(new_savepath, exist_ok=True)
+        # Save the overall gene associations
+        gene_associations.to_csv(new_savepath + f"OpenTargets-Export-{disease}.csv", index = False)
+        # Save image
+        image.save(new_savepath + f"OpenTargets-Association-Scores-{disease}.png", bbox_inches = 'tight', pad_inches = 0.5)
+        # Save coding variant evidence
+        prioritized_goldstandards_df.to_csv(new_savepath + f"OpenTargets-Coding-Variant-Evidence-{disease}.csv", index = False)
+        # Save prioritized gold standards
+        with open(new_savepath + f"OpenTargets-GoldStandards-{disease}.txt", 'w') as f:
+            f.write("\n".join(prioritized_goldstandards))
+        # Write threshold
+        with open(new_savepath + f"OpenTargets-Threshold-{disease}.txt", 'w') as f:
+            f.write(threshold)
+
+    return prioritized_goldstandards, prioritized_goldstandards_df
+#endregion
+
+
+
 #region Gold Standard Overlap
 def _get_overlap(list1:list, list2:list, background_list:list) -> (list, float): # type: ignore
     """
@@ -218,7 +701,9 @@ def _base_string_api(version:str) -> str:
     Returns:
         str: The base URL for the STRING-DB API.
     """
-    if version == 'v11.0':
+    if version == 'v10.0':
+        return "http://version10a.string-db.org/api/"
+    elif version == 'v11.0':
         return "https://version-11-0.string-db.org/api/"
     elif version == 'v11.5':
         return "https://version-11-5.string-db.org/api/"
@@ -431,6 +916,7 @@ def _string_api_call(version:str, genes:list, method:str, score_threshold:float,
         _format_genes(genes) + \
         _format_species(species=species) + \
         _format_score_threshold(score = score_threshold)
+    print("Query: ", query)
     response = requests.get(query)
     if response.status_code != 200:
         raise ValueError("Error: " + response.text)
@@ -462,11 +948,17 @@ def string_enrichment(query:list, string_version:str = 'v11.0', edge_confidence:
     edge_weight = _get_edge_weight(edge_confidence)
 
     # Get the STRING API version
-    version_b = _string_api_call(version = string_version, genes = query, method = 'version', score_threshold = edge_weight, species = species)
-    version = pd.read_csv(io.StringIO(version_b.decode('utf-8')), sep = '\t')
-    version = version.loc[0, 'string_version']
-    if verbose > 0:
-        print(f"STRING API version: {version}")
+    if string_version != 'v10.0':
+        version_b = _string_api_call(version = string_version, genes = query, method = 'version', score_threshold = edge_weight, species = species)
+        version = pd.read_csv(io.StringIO(version_b.decode('utf-8')), sep = '\t')
+        version = version.loc[0, 'string_version']
+        if verbose > 0:
+            print(f"STRING API version: {version}")
+    else:
+        version = string_version
+        raise ValueError("STRING v10.0 is archived and API endpoints have been disconnected. Please select another version")
+        if verbose > 0:
+            print(f"STRING API version: {version}")
 
     # Get the STRING interactions network file
     network = _string_api_call(version = string_version, genes = query, method = 'network_interactions', score_threshold = edge_weight, species = species)
@@ -2177,6 +2669,7 @@ def interconnectivity(set_1:list, set_2:list, set_3:list = None, set_4:list = No
     """
     #load and customize STRINGv11 network for analysis (evidence types, edge weights)
     string_net, string_net_all_genes = _load_clean_string_network(string_version, evidences, edge_confidence)
+    print(string_net.head())
 
     #get degree connectivity after edgeweight filtering
     # network is already edge weight filtered
