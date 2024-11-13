@@ -87,7 +87,9 @@ def _load_string(version:str) -> pd.DataFrame:
     if version not in ['v10.0', 'v11.0', 'v11.5', 'v12.0']:
         raise ValueError("Version must be 'v10.0', 'v11.0', 'v11.5', or 'v12.0'")
     stream = pkg_resources.resource_stream(__name__, f'data/9606.protein.links.detailed.{version}.feather')
-    return pd.read_feather(stream)
+    df_1 = pd.read_feather(stream)
+    df_1 = df_1.dropna()
+    return df_1
 
 def _load_open_targets_mapping() -> pd.DataFrame:
     """

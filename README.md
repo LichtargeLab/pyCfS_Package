@@ -1,5 +1,5 @@
 # pyCfS
-Version 0.1.3 <br>
+Version 0.1.4 <br>
 The aggregation of Lichtarge Lab genotype-phenotype validation experiments<br>
 
 ## Installation
@@ -150,7 +150,7 @@ Assess gene set network connectivity and functional enrichment using the STRING 
 #### Parameters:
 - `query` (list): List of genes
 - **Optional**:
-    - `string_version` (str): Version of STRING to use. Choose "v10.0", "v11.0", "v11.5", "v12.0". Default = "v11.0"
+    - `string_version` (str): Version of STRING to use. Choose "v11.0", "v11.5", "v12.0" ("v10.0" is deprecated). Default = "v11.0"
     - `edge_confidence` (str): Minimum edge weight for network. Options include 'all' (weight > 0), 'low' (weight > 0.15), 'medium' (weight > 0.4), 'high' (weight > 0.7), 'highest' (weight > 0.9). (Default = 'medium').
     - `species` (int): Species code from STRING (Default = 9606 (human))
     - `plot_fontsize` (int): Default = 14.
