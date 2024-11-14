@@ -10,5 +10,5 @@ from .Summarize import prioritize_genes
 
 from .utils import _hypergeo_overlap, _load_grch38_background, _load_string, _load_reactome, _get_open_targets_gene_mapping, _define_background_list, _clean_genelists, _format_scientific, _fix_savepath, _select_evidences, _get_evidence_types, _get_combined_score, _get_edge_weight, _load_clean_string_network, _validate_ea_thresh, _validate_af_thresh
 
-__version__ = '0.1.3'
+__version__ = '0.1.4'
 __author__ = 'Kevin Wilhelm, Jenn Asmussen'

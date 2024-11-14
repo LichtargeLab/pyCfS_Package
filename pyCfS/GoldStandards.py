@@ -43,6 +43,7 @@ warnings.filterwarnings("ignore", category=UndefinedMetricWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
+
 #region OpenTargets Gold Standard generator
 def _validate_efo_term(efo_id:str) -> None:
     """
@@ -2669,7 +2670,6 @@ def interconnectivity(set_1:list, set_2:list, set_3:list = None, set_4:list = No
     """
     #load and customize STRINGv11 network for analysis (evidence types, edge weights)
     string_net, string_net_all_genes = _load_clean_string_network(string_version, evidences, edge_confidence)
-    print(string_net.head())
 
     #get degree connectivity after edgeweight filtering
     # network is already edge weight filtered
