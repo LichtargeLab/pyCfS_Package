@@ -10,6 +10,7 @@ import io
 import os
 from tqdm import tqdm
 import concurrent.futures
+import pandas as pd
 import requests
 import time
 from multiprocessing import Pool
@@ -18,12 +19,12 @@ from typing import Any
 import random
 from urllib.error import HTTPError, URLError
 from http.client import IncompleteRead
-import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib_venn import venn2
 from matplotlib.colors import Normalize
 from matplotlib.cm import ScalarMappable
+from Bio import Entrez
 import seaborn as sns
 from PIL import Image
 from venn import venn
@@ -34,7 +35,6 @@ import warnings
 from sklearn.exceptions import UndefinedMetricWarning
 from sklearn.metrics import roc_curve, precision_recall_curve, auc
 import networkx as nx
-from Bio import Entrez
 import concurrent.futures
 from itertools import repeat
 from .utils import _hypergeo_overlap, _fix_savepath, _define_background_list, _clean_genelists, _load_grch38_background,_load_clean_string_network, _get_edge_weight
@@ -917,13 +917,12 @@ def _string_api_call(version:str, genes:list, method:str, score_threshold:float,
         _format_genes(genes) + \
         _format_species(species=species) + \
         _format_score_threshold(score = score_threshold)
-    print("Query: ", query)
     response = requests.get(query)
     if response.status_code != 200:
         raise ValueError("Error: " + response.text)
     return response.content
 
-def string_enrichment(query:list, string_version:str = 'v11.0', edge_confidence:str = 'medium', species:int = 9606, plot_fontsize:int = 14, plot_fontface:str = 'Avenir', savepath:Any = False, verbose:int = 0) -> tuple:
+def string_enrichment(query:list, string_version:str = 'v11.0', edge_confidence:str = 'medium', species:int = 9606, plot_fontsize:int = 14, plot_fontface:str = 'Sans Serif', savepath:Any = False, verbose:int = 0) -> tuple:
     """
     Performs STRING enrichment analysis for a given list of genes.
 
@@ -983,6 +982,10 @@ def string_enrichment(query:list, string_version:str = 'v11.0', edge_confidence:
         savepath = _fix_savepath(savepath)
         new_savepath = os.path.join(savepath, 'STRING_Enrichment/')
         os.makedirs(new_savepath, exist_ok=True)
+        # Write p-value to stats
+        with open(new_savepath + "STRING_Stats.txt", "w") as f:
+            f.write(f"STRING Metrics: confidence: {edge_confidence}, species: {species}, version: {version}\n")
+            f.write(f"STRING PPI p-value: {p_value}\n")
         network_df.to_csv(new_savepath + "STRING_Network.csv", index = False)
         network_image.save(new_savepath + "STRING_Network.png", bbox_inches = 'tight', pad_inches = 0.5)
         enrichment_df.to_csv(new_savepath + "STRING_Enrichment.csv", index = False)
@@ -3427,7 +3430,7 @@ def pubmed_comentions(query:list, keyword: str = False, custom_terms: str = Fals
     output_name = keyword if keyword else custom_terms
     # Pull the query co_mentions with keyword
     query_comention_df = _fetch_query_pubmed(query, keyword, custom_terms, email, api_key, field, workers)
-
+    print(query_comention_df.head())
     # Pull co_mentions for a random set of genes
     if run_enrichment:
         background_dict, background_name = _define_background_list(custom_background)
