@@ -2284,10 +2284,13 @@ def _get_unique_gene_network_bw_method_connections(network:pd.DataFrame, unique_
     bw_method_edges = []
 
     for g in net_genes:
+        # Get all connections where node1 = g
         df1 = network[network['node1'] == g]
+        # Get all genes connected to g in node2
         df1_genes = df1['node2'].tolist()
-
+        # Loop through all genes connected to g in node2
         for p in df1_genes:
+            # If the genes is not from the same set, add to bw_method_edges
             if unique_dict[p][0] != unique_dict[g][0]:
                 bw_method_edges.append([g, p])
 
@@ -3430,7 +3433,6 @@ def pubmed_comentions(query:list, keyword: str = False, custom_terms: str = Fals
     output_name = keyword if keyword else custom_terms
     # Pull the query co_mentions with keyword
     query_comention_df = _fetch_query_pubmed(query, keyword, custom_terms, email, api_key, field, workers)
-    print(query_comention_df.head())
     # Pull co_mentions for a random set of genes
     if run_enrichment:
         background_dict, background_name = _define_background_list(custom_background)
