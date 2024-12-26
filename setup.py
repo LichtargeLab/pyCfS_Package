@@ -54,6 +54,8 @@ setuptools.setup(
         'data/*.csv',
         'data/*.parquet',
         'data/mousePhenotypes/*.parquet',
-        'data/targets/*.parquet'
+        'data/targets/*.parquet',
+        'data/*.graphml',
+        'data/*.rpt'
     ]}
 )

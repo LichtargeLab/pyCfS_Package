@@ -37,7 +37,7 @@ from sklearn.metrics import roc_curve, precision_recall_curve, auc
 import networkx as nx
 import concurrent.futures
 from itertools import repeat
-from .utils import _hypergeo_overlap, _fix_savepath, _define_background_list, _clean_genelists, _load_grch38_background,_load_clean_string_network, _get_edge_weight, _write_sum_txt, _get_results, _check_overlap_dict, _get_degree_node, _parse_gene_input, _get_index_dict, _get_diffusion_param
+from .utils import _hypergeo_overlap, _fix_savepath, _define_background_list, _clean_genelists, _load_grch38_background,_load_clean_string_network, _get_edge_weight, _write_sum_txt, _get_results, _check_overlap_dict, _get_degree_node, _parse_gene_input, _get_index_dict, _get_diffusion_param, _parse_true_go_terms, _hypergeometric_overlap, _test_overlap_with_random, _go_term_ndiffusion
 
 warnings.filterwarnings("ignore", category=UndefinedMetricWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -921,7 +921,7 @@ def _string_api_call(version:str, genes:list, method:str, score_threshold:float,
         raise ValueError("Error: " + response.text)
     return response.content
 
-def string_enrichment(query:list, string_version:str = 'v11.0', edge_confidence:str = 'medium', species:int = 9606, plot_fontsize:int = 14, plot_fontface:str = 'Sans Serif', savepath:Any = False, verbose:int = 0) -> tuple:
+def string_enrichment(query:list, string_version:str = 'v11.0', edge_confidence:str = 'medium', species:int = 9606, plot_fontsize:int = 14, plot_fontface:str = 'Sans Serif', true_go_terms:list = [], cores:int = 1, savepath:Any = False, verbose:int = 0) -> tuple:
     """
     Performs STRING enrichment analysis for a given list of genes.
 
@@ -930,6 +930,7 @@ def string_enrichment(query:list, string_version:str = 'v11.0', edge_confidence:
         - string_version(str, optional): STRING database version. Defaults to 'v11.0'. Options include 'v10.0', 'v11.0', 'v11.5', and 'v12.0'.
         - edge_confidence (str, optional): Confidence score for STRING interactions. Defaults to 'medium'. Options include 'all', 'low'(>0.15), 'medium'(0.4), 'high'(0.7), and 'highest'(0.9).
         - species (int, optional): Species ID for STRING database. Defaults to 9606.
+        - true_go_terms (list, optional): If defined, will perform hypergeometric overlap with these GO terms, randomizing overlap to compute a z score, and perform nDiffusion across the GO term hierarchical ontology. Should define as a list of GO terms IDs (e.g. ['GO:0006955', 'GO:0006954', 'GO:0006956']). The function will parse these into molecular function, biological process, and cellular component and perform analyses on each.
         - plot_fontsize (int, optional): Font size for enrichment plots. Defaults to 14.
         - plot_fontface (str, optional): Font face for enrichment plots. Defaults to 'Avenir'.
         - savepath (Any, optional): Path to save the results. Defaults to False.
@@ -976,6 +977,49 @@ def string_enrichment(query:list, string_version:str = 'v11.0', edge_confidence:
     functional_enrichment = _string_api_call(version = string_version, genes = query, method = 'functional_enrichment', score_threshold = edge_weight, species = species)
     functional_enrichment_df = pd.read_csv(io.StringIO(functional_enrichment.decode('utf-8')), sep = '\t')
     enrichment_plots = _plot_enrichment(functional_enrichment_df, plot_fontsize, plot_fontface)
+    # Assess true go terms
+    if true_go_terms:
+        if savepath:
+            val_savepath = os.path.join(savepath, 'STRING_Enrichment/Validation/')
+            os.makedirs(val_savepath, exist_ok=True)
+        else:
+            pass
+
+        go_term_name_map = {'go_bp': 'Process', 'go_mf': 'Function', 'go_cc': 'Component'}
+        true_go_map, len_go, all_go = _parse_true_go_terms(true_go_terms, 0, 10_000)
+
+        for true_go_type, true_go_ids in true_go_map.items():
+            print(f"true go type: {true_go_type} -- {len(true_go_ids)} true go ids")
+            if len(true_go_ids) == 0:
+                continue
+            pd.Series(true_go_ids).to_csv(val_savepath + f'{true_go_type}_true_go_ids.csv', index = False, header = False)
+            # Filter the functional enrichment for our go terms
+            func_enrich_sub = functional_enrichment_df[functional_enrichment_df['category'] == go_term_name_map[true_go_type]]
+            query_ids = func_enrich_sub['term'].unique().tolist()
+            print(f"true go type: {true_go_type} -- {len(query_ids)} query ids")
+
+            # Assess overlap with the true go terms
+            venn_img, p_val = _hypergeometric_overlap(query_ids, true_go_ids, len_go[true_go_type], f'{true_go_type} overlap with {true_go_type} true terms', plot_venn = True, plot_fontsize = 12, plot_fontface = 'sans-serif')
+            venn_img.save(val_savepath + f'{true_go_type}_venn.png', bbox_inches = 'tight', pad_inches = 0.5)
+
+            # Test how significant the overlap is 
+            if p_val != 1:
+                z_dist_plot, z_score, rando_phenotypes, rando_overlaps = _test_overlap_with_random(query_ids, true_go_ids, len_go[true_go_type], all_go[true_go_type], 100, f'{true_go_type}-({len(true_go_ids)})', 12, 'sans-serif', plot_venn = True)
+                z_dist_plot.save(val_savepath + f'{true_go_type}_z_dist_plot.png', bbox_inches = 'tight', pad_inches = 0.5)
+                pd.Series(rando_phenotypes).to_csv(val_savepath + f'{true_go_type}_rando_phenotypes.csv', index = False, header = False)
+                pd.Series(rando_overlaps).to_csv(val_savepath + f'{true_go_type}_rando_overlaps.csv', index = False, header = False)
+
+            # Run nDiffusion for GO terms
+            show_1_plot, show_1_z, show_2_plot, show_2_z = _go_term_ndiffusion(
+                go_type = true_go_type,
+                query_phenotypes = query_ids,
+                true_id_terms = true_go_ids,
+                true_keyword = true_go_type,
+                set_1_name = f"Query GO Terms ({len(query_ids)})",
+                n_iter = 100,
+                cores = cores,
+                savepath = val_savepath
+            )
 
     if savepath:
         savepath = _fix_savepath(savepath)
@@ -2335,7 +2379,7 @@ def _entrez_search(gene:str, disease:str, custom_terms:str, email:str, api_key:s
                 # Specific action for 502 Bad Gateway error
                 raise RuntimeError('Received a 502 Bad Gateway error from the PubMed server. Please try again later.')
             elif attempt < retries - 1:
-                time.sleep(10)
+                time.sleep(200)
             else:
                 raise RuntimeError(f'Failed to retrieve data after {retries} attempts due to error: {e}')
         except (IndexError, URLError, IncompleteRead) as e:
@@ -2386,7 +2430,7 @@ def _parse_entrez_result(result:dict) -> (str, int): # type: ignore
             n_paper_dis = int(result['Count'])
     return gene, n_paper_dis
 
-def _fetch_query_pubmed(query: list, keyword: str, custom_terms:str, email: str, api_key: str, field:str, cores: int) -> pd.DataFrame:
+def _fetch_query_pubmed(query: list, keyword: str, custom_terms:str, email: str, api_key: str, field:str, cores: int, verbose: int = 0) -> pd.DataFrame:
     """
     Fetches publication data from PubMed for a list of genes related to a specific keyword.
     This function concurrently queries PubMed for each gene and compiles the results into
@@ -2414,7 +2458,7 @@ def _fetch_query_pubmed(query: list, keyword: str, custom_terms:str, email: str,
     with concurrent.futures.ThreadPoolExecutor(max_workers=cores) as executor:
         # Add tqdm for progress bar
         results = executor.map(_entrez_search, query, repeat(keyword), repeat(custom_terms), repeat(email), repeat(api_key), repeat(field))
-        for result in tqdm(results, total=len(query), desc="Fetching PubMed data"):
+        for result in tqdm(results, total=len(query), desc="Fetching PubMed data", disable = (verbose == 0)):
             gene, n_paper_dis = _parse_entrez_result(result)
             # Populate the data frames with the results
             out_df.loc[gene, 'PMID for Gene + ' + col_name] = "; ".join(result.get('IdList', []))
@@ -2456,7 +2500,7 @@ def _fetch_random_pubmed(query: list, disease_query: str, custom_terms: str, ema
     else:
         out_query = disease_query
     # Add a progress bar using tqdm
-    for i in tqdm(range(trials), desc="Fetching random PubMed data", ncols=100):
+    for i in tqdm(range(trials), desc="Fetching random PubMed data", ncols=100, disable = (verbose == 0)):
         if i % 10 == 0 and verbose > 0:
             print(f" Random Trial : {i}")
         rng = np.random.default_rng(i * 3)
@@ -2560,10 +2604,9 @@ def pubmed_comentions(query:list, keyword: str = False, custom_terms: str = Fals
         dict : Dictionary, where keys = enrichment_cutoff values and values = (number of query genes in subset, z_score)
         dict : Dictionary, where keys = enrichment_cutoff values and values = enrichment plot.
     """
-    print('Running PubMed CoMentions')
     output_name = keyword if keyword else custom_terms
     # Pull the query co_mentions with keyword
-    query_comention_df = _fetch_query_pubmed(query, keyword, custom_terms, email, api_key, field, workers)
+    query_comention_df = _fetch_query_pubmed(query, keyword, custom_terms, email, api_key, field, workers, verbose = verbose)
     # Pull co_mentions for a random set of genes
     if run_enrichment:
         background_dict, background_name = _define_background_list(custom_background)
@@ -2620,19 +2663,3 @@ def pubmed_comentions(query:list, keyword: str = False, custom_terms: str = Fals
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-#endregion

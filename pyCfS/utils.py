@@ -11,11 +11,13 @@ import numpy as np
 import networkx as nx
 from scipy.sparse import lil_matrix, csr_matrix, coo_matrix, csgraph, identity
 from scipy.sparse.linalg import lgmres
+import ast
 from collections import Counter
 import random
 from sklearn.metrics import roc_curve, precision_recall_curve, auc
 import matplotlib.pyplot as plt
 import io
+from matplotlib_venn import venn2
 from PIL import Image
 from multiprocessing import Pool
 from scipy.stats import ks_2samp
@@ -618,6 +620,403 @@ def _load_clean_string_network(version:str, evidences:list, edge_confidence:str)
 
     return string_net, string_net_genes
 #endregion
+
+#region GO network functions
+def _get_go_terms(min_size: int, max_size: int) -> (dict, dict, dict): # type: ignore
+    """
+    Returns three dictionaries containing Gene Ontology (GO) terms for biological processes, cellular components, and molecular functions.
+
+    Parameters:
+    max_size (int): The maximum size of the GO term gene list.
+    min_size (int): The minimum size of the GO term gene list.
+
+    Returns:
+    tuple: A tuple containing three dictionaries. The first dictionary contains GO terms for biological processes, the second dictionary contains GO terms for cellular components, and the third dictionary contains GO terms for molecular functions. Each dictionary maps a GO term name to a list of genes associated with that term.
+    """
+    #load go terms
+    #goterms_stream = pkg_resources.resource_stream(__name__, 'data/GO_terms_parsed_12012022.csv')
+    goterms_stream = pkg_resources.resource_stream(__name__, 'data/GO_terms_parsed_12.20.24.csv')
+    goterms = pd.read_csv(goterms_stream)
+    goterms['gene_lst'] = goterms['gene_lst'].apply(lambda x: list(ast.literal_eval(x)))
+    goterms['Goterm/Name'] = goterms['GOterm'] + '/' + goterms['Name']
+    goterms_bp = goterms[(goterms['Type']== 'namespace: biological_process') & (goterms['length']<= max_size) & (goterms['length']>= min_size)]
+    goterms_bp_dict = dict(zip(goterms_bp['Goterm/Name'].tolist(), goterms_bp['gene_lst'].tolist()))
+    goterms_cc = goterms[(goterms['Type']== 'namespace: cellular_component') & (goterms['length']<= max_size) & (goterms['length']>= min_size)]
+    goterms_cc_dict = dict(zip(goterms_cc['Goterm/Name'].tolist(), goterms_cc['gene_lst'].tolist()))
+    goterms_mf = goterms[(goterms['Type']== 'namespace: molecular_function') & (goterms['length']<= max_size) & (goterms['length']>= min_size)]
+    goterms_mf_dict = dict(zip(goterms_mf['Goterm/Name'].tolist(), goterms_mf['gene_lst'].tolist()))
+    return goterms_bp_dict, goterms_cc_dict, goterms_mf_dict
+
+def _parse_true_go_terms(true_go_terms:list, min_size:int, max_size:int) -> dict:
+    out_go = {'go_bp': [], 'go_cc': [], 'go_mf': []}
+    len_go = {'go_bp': 0, 'go_cc': 0, 'go_mf': 0}
+    all_go = {'go_bp': [], 'go_cc': [], 'go_mf': []}
+    # Get the GO Term file
+    goterms_bp_dict, goterms_cc_dict, goterms_mf_dict = _get_go_terms(min_size, max_size)
+    # Get the number of GO terms
+    len_go['go_bp'] = len(goterms_bp_dict.keys())
+    len_go['go_cc'] = len(goterms_cc_dict.keys())
+    len_go['go_mf'] = len(goterms_mf_dict.keys())
+    # Get all the GO Ids for each
+    all_go['go_bp'] = [x.split('/')[0] for x in goterms_bp_dict.keys()]
+    all_go['go_cc'] = [x.split('/')[0] for x in goterms_cc_dict.keys()]
+    all_go['go_mf'] = [x.split('/')[0] for x in goterms_mf_dict.keys()]
+    for term in true_go_terms:
+        if term in all_go['go_bp']:
+            out_go['go_bp'].append(term)
+        elif term in all_go['go_cc']:
+            out_go['go_cc'].append(term)
+        elif term in all_go['go_mf']:
+            out_go['go_mf'].append(term)
+    return out_go, len_go, all_go
+
+def _plot_overlap_venn(query_len:int, goldstandard_len:int, overlap:list, pval:float, show_genes: bool, show_pval: bool, query_color:str, goldstandard_color:str, fontsize:int, fontface:str, goldstandard_name:str) -> None:
+    """
+        Plots a Venn diagram representing the overlap between two sets and returns the plot as an image.
+
+        This function creates a Venn diagram to visualize the overlap between a query set and a gold standard set.
+        It displays the overlap size, the p-value of the overlap, and the names of the overlapping items. If there
+        are no overlapping genes or if the query set is empty, the function will print a relevant message and return False.
+
+        Args:
+            query_len (int): The number of elements in the query set.
+            goldstandard_len (int): The number of elements in the gold standard set.
+            overlap (list): A list of overlapping elements between the query and gold standard sets.
+            pval (float): The p-value representing the statistical significance of the overlap.
+            query_color (str): The color to be used for the query set in the Venn diagram.
+            goldstandard_color (str): The color to be used for the gold standard set in the Venn diagram.
+            fontsize (int): The font size to be used in the Venn diagram.
+            fontface (str): The font face to be used in the Venn diagram.
+
+        Returns:
+            Image: An image object of the Venn diagram. If there is no overlap or the query is empty, returns False.
+    """
+    if overlap == 0:
+        return False
+    elif query_len == 0:
+        return False
+    # Create Venn Diagram
+    plt.rcParams.update({'font.size': fontsize,
+                         'font.family': fontface})
+    _ = plt.figure(figsize=(10, 5))
+    out = venn2(subsets=((query_len - overlap),
+                        (goldstandard_len - overlap),
+                        overlap),
+                        set_labels=('Query', f'{goldstandard_name}'),
+                        set_colors=('white', 'white'),
+                        alpha=0.7)
+    overlap1 = out.get_patch_by_id("A")
+    overlap1.set_edgecolor(query_color)
+    overlap1.set_linewidth(3)
+    overlap2 = out.get_patch_by_id("B")
+    overlap2.set_edgecolor(goldstandard_color)
+    overlap2.set_linewidth(3)
+
+    for text in out.set_labels:
+        text.set_fontsize(fontsize + 2)
+    for text in out.subset_labels:
+        if text == None:
+            continue
+        text.set_fontsize(fontsize)
+    if show_genes:
+        plt.text(0, -0.78,
+                ", ".join(overlap),
+                horizontalalignment='center',
+                verticalalignment='top',
+                fontsize=fontsize-2)
+    if show_pval:
+        if pval < 0.01:
+            plt.text(0, -0.7,
+                    str("p = " + f"{pval:.2e}"),
+                    horizontalalignment='center',
+                    verticalalignment='top',
+                    fontsize=fontsize-2)
+        else:
+            plt.text(0, -0.7,
+                str("p = " + f"{pval:.2f}"),
+                horizontalalignment='center',
+                verticalalignment='top',
+                fontsize=fontsize-2)
+    #plt.title("Gold Standard Overlap", fontsize=fontsize+4)
+    plt.tight_layout(pad = 2.0)
+    buffer = io.BytesIO()
+    plt.savefig(buffer, format = 'png', dpi = 300)
+    buffer.seek(0)
+    image = Image.open(buffer)
+    plt.close()
+    return image
+
+def _hypergeometric_overlap(query_phenotypes: list, true_phenotypes:list, total_phenotypes:int, omim_true_keyword:int, plot_fontsize:int, plot_fontface:str, plot_venn:bool = False,) -> (Image, float): # type: ignore
+    """
+    Returns a venn diagram and p-value for the hypergeometric overlap between the true phenotypes and all phenotypes.
+    """
+    # Calculate hypergeometric overlap
+    overlapping_phenotypes = [phenotype for phenotype in query_phenotypes if phenotype in true_phenotypes]
+    background_size = total_phenotypes
+    len_query = len(query_phenotypes)
+    len_gs = len(true_phenotypes)
+    len_overlap = len(overlapping_phenotypes)
+    p_val = hypergeom.sf(len_overlap - 1, background_size, len_gs, len_query)
+
+    # Plot venn diagram
+    if plot_venn:
+        venn_img = _plot_overlap_venn(
+            query_len = len_query,
+            goldstandard_len = len_gs,
+            overlap = len_overlap,
+            pval = p_val,
+            show_genes = False,
+            show_pval = True,
+            query_color = 'red',
+            goldstandard_color = 'gray',
+            fontsize = plot_fontsize,
+            fontface = plot_fontface,
+            goldstandard_name = f'OMIM:{omim_true_keyword}'
+        )
+
+    return venn_img, p_val
+
+def _test_overlap_with_random(query_phenotypes: list, true_phenotypes:list, total_phenotypes:int, all_phenotypes:list, random_iter:int, omim_true_keyword:int, plot_fontsize:int, plot_fontface:str, plot_venn:bool = False) -> (Image, float): # type: ignore
+    """
+    Tests the overlap between the query phenotypes and the true phenotypes by pulling 100 random phenotypes of the same size and testing the overlap.
+    """
+    # Pull 100 sets of random phenotypes of same size
+    len_query = len(query_phenotypes)
+    true_overlap = len([phenotype for phenotype in query_phenotypes if phenotype in true_phenotypes])
+    rando_phenotypes = []
+    rando_overlaps = []
+    rando_pvals = []
+    for _ in range(random_iter):
+        random_pheno = pd.Series(all_phenotypes).sample(len_query).tolist()
+        rando_phenotypes.append(random_pheno)
+        # Calculate the hypergeometric overlap
+        overlapping_phenotypes = [phenotype for phenotype in random_pheno if phenotype in true_phenotypes]
+        _, p_val = _hypergeometric_overlap(random_pheno, true_phenotypes, total_phenotypes, omim_true_keyword, plot_fontsize, plot_fontface, plot_venn = plot_venn)
+        rando_pvals.append(p_val)
+        rando_overlaps.append(len(overlapping_phenotypes))
+    
+    # Calculate the z-score
+    z_score = (true_overlap - np.mean(rando_overlaps)) / np.std(rando_overlaps)
+
+    # Plot the z-score distribution
+    _, ax = plt.subplots(figsize=(6, 4), tight_layout=True)
+    ax.hist(rando_overlaps, color='gray', edgecolor='black', density=False, bins=20, alpha = 0.5, label = 'Random Overlap')
+    ax.axvline(true_overlap, color='red', linestyle='dashed', label = 'True Overlap')
+    ax.spines['right'].set_visible(False)
+    ax.spines['top'].set_visible(False)
+    ax.legend()
+    ax.set_xlabel('# of phenotypes overlapping', size=14)
+    ax.set_ylabel('Count', size=14)
+    ax.set_title('Z-score: {:.2f}'.format(z_score), size=14)
+    buffer = io.BytesIO()
+    plt.savefig(buffer, format = 'png', dpi = 300)
+    buffer.seek(0)
+    image = Image.open(buffer)
+    plt.close()
+    
+    return image, z_score, rando_phenotypes, rando_overlaps
+
+def _load_go_network(go_type:str):
+    # LOad the graphml file
+    if go_type == 'go_bp':
+        graph_stream = pkg_resources.resource_stream(__name__, 'data/GO_biological_process_graph_12.19.24.graphml')
+    elif go_type == 'go_cc':
+        graph_stream = pkg_resources.resource_stream(__name__, 'data/GO_cellular_component_graph_12.19.24.graphml')
+    elif go_type == 'go_mf':
+        graph_stream = pkg_resources.resource_stream(__name__, 'data/GO_molecular_function_graph_12.19.24.graphml')
+    G = nx.read_graphml(graph_stream)
+    # Get all nodes
+    nodes = list(G.nodes())
+    return G, nodes
+
+def _get_go_graph(go_net:nx.Graph):
+    graph_node = list(go_net.nodes())
+    adj_matrix = nx.to_scipy_sparse_array(go_net)
+    node_degree = dict(nx.degree(go_net))
+    g_degree = node_degree.values()
+    return graph_node, adj_matrix, node_degree, g_degree
+
+def _go_term_ndiffusion(go_type:str, query_phenotypes: list, true_keyword:int, true_id_terms:list, set_1_name:str, n_iter: int = 100, cores:int =1, savepath:str = False, verbose: int = 0) -> (Image, float, Image, float): # type: ignore
+    """
+        Performs network diffusion analysis between two sets of genes.
+
+        Args:
+            - set_1 (list): List of genes in set 1.
+            - set_2 (list): List of genes in set 2.
+            - set_1_name (str, optional): Name of set 1. Defaults to 'Set_1'.
+            - set_2_name (str, optional): Name of set 2. Defaults to 'Set_2'.
+            - string_version (str, optional): STRING version to use. Defaults to 'v11.0'. Options include 'v10.0', 'v11.0', 'v11.5', 'v12.0'.
+            - evidences (list, optional): List of evidence types to consider. Defaults to ['all']. Options include 'experiments', 'databases', 'textmining', 'coexpression', 'neighborhood', 'fusion', 'cooccurrence'.
+            - edge_confidence (str, optional): Confidence level for edges. Defaults to 'all'. Options include 'all', 'low' (>0.15), 'medium' (0.4), 'high' (0.7), 'highest' (0.9).
+            - custom_background (Any, optional): Custom background gene set. Defaults to 'string'. Options include 'string', 'ensembl', 'reactome'.
+            - n_iter (int, optional): Number of diffusion iterations. Defaults to 100.
+            - cores (int, optional): Number of cores to use for parallel processing. Defaults to 1.
+            - savepath (str, optional): Path to save the results. Defaults to False.
+            - verbose (int, optional): Verbosity level. Defaults to 0.
+
+        Returns:
+            Image: AUROC plot for show_1 - "from Set1Exclusive to Set2"; if there is no overlap, then "from Set1 to Set2"
+            float: AUROC value for show_1 - randomized set1, degree-matched
+            Image: AUROC plot for show_2 - "from Set2Exclusive to Set1"; if there is no overlap, then "from Set2 to Set1"
+            float: AUROC value for show_2 - randomized set2, degree-matched
+    """
+    # Set parameters
+    group1_name = set_1_name
+    group2_name = str(true_keyword)
+
+    # Load MGI Network
+    go_net, _ = _load_go_network(go_type)
+
+    # Get network and diffusion parameters
+    graph_node, adj_matrix, node_degree, g_degree = _get_go_graph(go_net)
+
+    ps = _get_diffusion_param(adj_matrix)
+    graph_node_index = _get_index_dict(graph_node)
+    gp1_only_dict, gp2_only_dict, overlap_dict, other_dict =_parse_gene_input(
+        query_phenotypes, true_id_terms, graph_node, graph_node_index, node_degree, verbose = verbose
+    )
+    degree_nodes = _get_degree_node(g_degree, node_degree, other_dict['node'])
+    gp1_all_dict, gp2_all_dict, exclusives_dict = _check_overlap_dict(overlap_dict, gp1_only_dict, gp2_only_dict)
+
+    # Run diffusion
+    # If there is no overlap, no genes specific to set_1, and no genes specific to set_2
+    if overlap_dict['node'] != [] and gp1_only_dict['node'] != [] and gp2_only_dict['node'] != []:
+        # From group 1 exclusive to group 2 all:
+        r_gp1o_gp2 = _get_results(
+            gp1_only_dict, gp2_all_dict, group1_name+'Excl', group2_name, show = '__SHOW_1_',
+            degree_nodes = degree_nodes, other_dict = other_dict, graph_node_index = graph_node_index, graph_node = graph_node, ps = ps, cores = cores, repeat = n_iter
+        )
+        show_1_plot = r_gp1o_gp2[1][0]
+        show_1_z = r_gp1o_gp2[0][1][1]
+        # From group 2 exclusive to group 1 all:
+        r_gp2o_gp1 = _get_results(
+            gp2_only_dict, gp1_all_dict, group2_name+'Excl', group1_name, show = '__SHOW_2_',
+            degree_nodes = degree_nodes, other_dict = other_dict, graph_node_index = graph_node_index, graph_node = graph_node, ps = ps, cores = cores, repeat = n_iter
+        )
+        show_2_plot = r_gp2o_gp1[1][0]
+        show_2_z = r_gp2o_gp1[0][1][1]
+        # From group 1 exclusive to group 2 exclusive:
+        r_gp1o_gp2o = _get_results(
+            gp1_only_dict, gp2_only_dict, group1_name+'Excl', group2_name+'Excl',
+            degree_nodes = degree_nodes, other_dict = other_dict, graph_node_index = graph_node_index, graph_node = graph_node, ps = ps, cores = cores, repeat = n_iter
+        )
+        # From group 2 exclusive to group 1 exclusive:
+        r_gp2o_gp1o = _get_results(
+            gp2_only_dict, gp1_only_dict, group2_name+'Excl', group1_name+'Excl',
+            degree_nodes = degree_nodes, other_dict = other_dict, graph_node_index = graph_node_index, graph_node = graph_node, ps = ps, cores = cores, repeat = n_iter
+        )
+        # From group 1 exclusive to the overlap
+        r_gp1o_overlap = _get_results(
+            gp1_only_dict, overlap_dict, group1_name+'Excl', 'Overlap', degree_nodes = degree_nodes, other_dict = other_dict, graph_node_index = graph_node_index, graph_node = graph_node, ps = ps, cores = cores, repeat = n_iter
+        )
+        # From group 2 exclusive to the overlap
+        r_gp2o_overlap = _get_results(
+            gp2_only_dict, overlap_dict, group2_name+'Excl', 'Overlap', degree_nodes = degree_nodes, other_dict = other_dict, graph_node_index = graph_node_index, graph_node = graph_node, ps = ps, cores = cores, repeat = n_iter
+        )
+        # From overlap to (group 1 exclusive and group 2 exlusive)
+        r_overlap_exclusives = _get_results(
+            overlap_dict, exclusives_dict,'Overlap', 'Exclus', degree_nodes = degree_nodes, other_dict = other_dict, graph_node_index = graph_node_index, graph_node = graph_node, ps = ps, cores = cores, repeat = n_iter
+        )
+        # Record results to not write
+        r_gp1_gp2 = False
+        r_gp2_gp1 = False
+        r_overlap_gp1o = False
+        r_overlap_gp2o = False
+    # For when group 2 is entirely part of group 1
+    elif overlap_dict['node'] != [] and gp2_only_dict['node'] == []:
+        # From group 1 exclusive to overlap/group 2
+        r_gp1o_overlap = _get_results(
+            gp1_only_dict, overlap_dict, group1_name+'Excl', 'Overlap or'+group2_name, degree_nodes = degree_nodes, other_dict = other_dict, graph_node_index = graph_node_index, graph_node = graph_node, ps = ps, cores = cores, repeat = n_iter
+        )
+        show_1_plot = r_gp1o_overlap[1][0]
+        show_1_z = r_gp1o_overlap[0][1][1]
+        # From overlap/group 2 to group 1 exclusive
+        r_overlap_gp1o = _get_results(
+            overlap_dict, gp1_only_dict,'Overlap or'+group2_name, group1_name+'Excl', degree_nodes = degree_nodes, other_dict = other_dict, graph_node_index = graph_node_index, graph_node = graph_node, ps = ps, cores = cores, repeat = n_iter
+        )
+        show_2_plot = r_overlap_gp1o[1][0]
+        show_2_z = r_overlap_gp1o[0][1][1]
+        # Record results to not write
+        r_gp1o_gp2 = False
+        r_gp2o_gp1 = False
+        r_gp1o_gp2o = False
+        r_gp2o_gp1o = False
+        r_gp2o_overlap = False
+        r_overlap_exclusives = False
+        r_gp1_gp2 = False
+        r_gp2_gp1 = False
+        r_overlap_gp2o = False
+    # For when group 1 is entirely part of group 2
+    elif overlap_dict['node'] != [] and gp1_only_dict['node'] == []:
+        # From group 2 exclusive to overlap/group 1
+        r_gp2o_overlap = _get_results(
+            gp2_only_dict, overlap_dict, group2_name+'Excl', 'Overlap or '+group1_name, degree_nodes = degree_nodes, other_dict = other_dict, graph_node_index = graph_node_index, graph_node = graph_node, ps = ps, cores = cores, repeat = n_iter
+        )
+        show_1_plot = r_gp2o_overlap[1][0]
+        show_1_z = r_gp2o_overlap[0][1][1]
+        # From overlap/group 1 to group 2 exclusive
+        r_overlap_gp2o = _get_results(
+            overlap_dict, gp2_only_dict, 'Overlap or'+group1_name, group2_name+'Excl', degree_nodes = degree_nodes, other_dict = other_dict, graph_node_index = graph_node_index, graph_node = graph_node, ps = ps, cores = cores, repeat = n_iter
+        )
+        show_2_plot = r_overlap_gp2o[1][0]
+        show_2_z = r_overlap_gp2o[0][1][1]
+        # Record what to save
+        r_gp1o_gp2 = False
+        r_gp2o_gp1 = False
+        r_gp1o_gp2o = False
+        r_gp2o_gp1o = False
+        r_gp1o_overlap = False
+        r_overlap_exclusives = False
+        r_gp1_gp2 = False
+        r_gp2_gp1 = False
+        r_overlap_gp1o = False
+    # For when there is no overlap b/w two groups
+    else:
+        # From group 1 to group 2:
+        r_gp1o_gp2o = _get_results(
+            gp1_only_dict, gp2_only_dict, group1_name, group2_name, show = '__SHOW_1_',
+            degree_nodes = degree_nodes, other_dict = other_dict, graph_node_index = graph_node_index, graph_node = graph_node, ps = ps, cores = cores, repeat = n_iter
+        )
+        show_1_plot = r_gp1o_gp2o[1][0]
+        show_1_z = r_gp1o_gp2o[0][1][1]
+        # From group 2 to group 1:
+        r_gp2o_gp1o = _get_results(
+            gp2_only_dict, gp1_only_dict, group2_name, group1_name, show = '__SHOW_2_',
+            degree_nodes = degree_nodes, other_dict = other_dict, graph_node_index = graph_node_index, graph_node = graph_node, ps = ps, cores = cores, repeat = n_iter
+        )
+        show_2_plot = r_gp2o_gp1o[1][0]
+        show_2_z = r_gp2o_gp1o[0][1][1]
+        # Record what to save
+        r_gp1o_gp2 = False
+        r_gp2o_gp1 = False
+        r_gp1o_overlap = False
+        r_gp2o_overlap = False
+        r_overlap_exclusives = False
+        r_gp1_gp2 = False
+        r_gp2_gp1 = False
+        r_overlap_gp1o = False
+        r_overlap_gp2o = False
+
+    if savepath:
+        savepath = _fix_savepath(savepath)
+        new_savepath = os.path.join(savepath, f'nDiffusion_GOterms_{true_keyword}/')
+        os.makedirs(new_savepath, exist_ok=True)
+        _write_sum_txt(
+            new_savepath, group1_name, group2_name, gp1_only_dict, gp2_only_dict, overlap_dict,
+            r_gp1o_gp2 = r_gp1o_gp2,
+            r_gp2o_gp1 = r_gp2o_gp1,
+            r_gp1o_gp2o = r_gp1o_gp2o,
+            r_gp2o_gp1o = r_gp2o_gp1o,
+            r_gp1o_overlap = r_gp1o_overlap,
+            r_gp2o_overlap = r_gp2o_overlap,
+            r_overlap_exclusives = r_overlap_exclusives,
+            r_gp1_gp2 = r_gp1_gp2,
+            r_gp2_gp1 = r_gp2_gp1,
+            r_overlap_gp1o = r_overlap_gp1o,
+            r_overlap_gp2o = r_overlap_gp2o
+        )
+    return show_1_plot, show_1_z, show_2_plot, show_2_z
+
 
 #region nDiffusion functions
 def _get_graph(network: pd.DataFrame) -> (nx.Graph, list, np.array, dict, list): # type: ignore

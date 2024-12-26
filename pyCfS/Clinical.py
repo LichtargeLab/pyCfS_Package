@@ -747,7 +747,7 @@ def _get_mgi_graph(mgi_graph:nx.Graph) -> (list, np.array, dict, list): # type: 
 
 def _load_mgi_network():
     # LOad the graphml file
-    graph_stream = pkg_resources.resource_stream(__name__, 'data/mp_network_undirected_weight1.graphml')
+    graph_stream = pkg_resources.resource_stream(__name__, 'data/mp_network_undirected_weight1_12.15.24.graphml')
     G = nx.read_graphml(graph_stream)
     # Get all nodes
     nodes = list(G.nodes())
@@ -942,6 +942,7 @@ def mouse_phenotype_enrichment(query:list, omim_true_keyword:Any = '', custom_ba
         Args:
         - query (list): A list of gene symbols to be tested for enrichment.
         - custom_background (str): The gene set to be used as the background for the enrichment analysis. Default is 'ensembl'. Options include 'reactome', 'ensembl', 'string_v12.0', 'string_v11.5', 'string_v11.0', 'string_v10.0'. STRING background is all interactions > 0.15.
+        - `omim_true_keyword` (str or int): Keyword or OMIM ID for true phenotypes. For example, if set as 125853, the function will subset for phenotypes associated with "Type 2 Diabetes". If set as "mammary", the function will subset for any phenotype mentioning "mammary"
         - random_iter (int): The number of random iterations to perform for the enrichment analysis. Default is 5000.
         - plot_sig_color (str): The color to use for significant points in the enrichment plot. Default is 'red'.
         - plot_q_threshold (float): The q-value threshold for significance in the enrichment plot. Default is 0.05.
