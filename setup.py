@@ -3,7 +3,7 @@ Setup script for pyCfS, a package for gene list validation experiments
 """
 import setuptools
 
-VERSION = '0.1.5'
+VERSION = '0.1.6'
 
 setuptools.setup(
     name = 'pyCfS',
@@ -54,6 +54,8 @@ setuptools.setup(
         'data/*.csv',
         'data/*.parquet',
         'data/mousePhenotypes/*.parquet',
-        'data/targets/*.parquet'
+        'data/targets/*.parquet',
+        'data/*.graphml',
+        'data/*.rpt'
     ]}
 )

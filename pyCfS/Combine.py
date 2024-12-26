@@ -13,6 +13,7 @@ import matplotlib.pyplot as plt
 import upsetplot as up
 from PIL import Image
 import io
+from matplotlib_venn import venn2
 import networkx as nx
 import uuid
 import ast
@@ -24,7 +25,7 @@ import itertools
 import multiprocessing as mp
 from scipy.stats import hypergeom, percentileofscore
 import os
-from .utils import _fix_savepath, _get_edge_weight, _get_combined_score, _select_evidences, _get_evidence_types, _load_string, _load_reactome, _define_background_list
+from .utils import _fix_savepath, _get_edge_weight, _get_combined_score, _select_evidences, _get_evidence_types, _load_string, _load_reactome, _define_background_list, _go_term_ndiffusion, _hypergeometric_overlap, _test_overlap_with_random, _parse_true_go_terms, _get_go_terms
 
 #region Consensus
 def _format_input_dict(list_names:list, gene_lists:list) -> dict:
@@ -238,30 +239,6 @@ def _get_reactomes(min_size: int, max_size: int) -> dict:
     reactomes_genes = [x[1:] for x in reactomes]
     reactome_dict = dict(zip(reactomes_names, reactomes_genes))
     return reactome_dict
-
-def _get_go_terms(min_size: int, max_size: int) -> (dict, dict, dict): # type: ignore
-    """
-    Returns three dictionaries containing Gene Ontology (GO) terms for biological processes, cellular components, and molecular functions.
-
-    Parameters:
-    max_size (int): The maximum size of the GO term gene list.
-    min_size (int): The minimum size of the GO term gene list.
-
-    Returns:
-    tuple: A tuple containing three dictionaries. The first dictionary contains GO terms for biological processes, the second dictionary contains GO terms for cellular components, and the third dictionary contains GO terms for molecular functions. Each dictionary maps a GO term name to a list of genes associated with that term.
-    """
-    #load go terms
-    goterms_stream = pkg_resources.resource_stream(__name__, 'data/GO_terms_parsed_12012022.csv')
-    goterms = pd.read_csv(goterms_stream)
-    goterms['gene_lst'] = goterms['gene_lst'].apply(lambda x: list(ast.literal_eval(x)))
-    goterms['Goterm/Name'] = goterms['GOterm'] + '/' + goterms['Name']
-    goterms_bp = goterms[(goterms['Type']== 'namespace: biological_process') & (goterms['length']<= max_size) & (goterms['length']>= min_size)]
-    goterms_bp_dict = dict(zip(goterms_bp['Goterm/Name'].tolist(), goterms_bp['gene_lst'].tolist()))
-    goterms_cc = goterms[(goterms['Type']== 'namespace: cellular_component') & (goterms['length']<= max_size) & (goterms['length']>= min_size)]
-    goterms_cc_dict = dict(zip(goterms_cc['Goterm/Name'].tolist(), goterms_cc['gene_lst'].tolist()))
-    goterms_mf = goterms[(goterms['Type']== 'namespace: molecular_function') & (goterms['length']<= max_size) & (goterms['length']>= min_size)]
-    goterms_mf_dict = dict(zip(goterms_mf['Goterm/Name'].tolist(), goterms_mf['gene_lst'].tolist()))
-    return goterms_bp_dict, goterms_cc_dict, goterms_mf_dict
 
 def _get_kegg_pathways(min_size:int, max_size:int) -> dict:
     """
@@ -993,34 +970,35 @@ def _annotated_true_clusters_enrich_sig(true_clusters_enrich_df_dict:dict, pval_
         new_dict[key]['combo'] = pd.concat([value['reactomes'], value['go_bp'], value['go_cc'], value['go_mf'], value['kegg'], value['wiki']], axis = 0)
     return new_dict
 
-def functional_clustering(genes_1: list = False, genes_2: list = False, genes_3: Any = False, genes_4: Any = False, genes_5: Any = False, source_names: Any = False, gene_dict: Any = False, string_version:str = 'v11.0', evidences:list = ['all'], edge_confidence:str = 'highest', custom_background:Any = 'string', random_iter:int = 100, inflation:Any = None, pathways_min_group_size:int = 5, pathways_max_group_size: int = 100, cores:int = 1, savepath: Any = False, verbose:int = 0) -> (pd.DataFrame, pd.DataFrame, dict): # type: ignore
+def functional_clustering(genes_1: list = False, genes_2: list = False, genes_3: Any = False, genes_4: Any = False, genes_5: Any = False, source_names: Any = False, gene_dict: Any = False, true_go_terms: Any = False, string_version:str = 'v11.0', evidences:list = ['all'], edge_confidence:str = 'highest', custom_background:Any = 'string', random_iter:int = 100, inflation:Any = None, pathways_min_group_size:int = 5, pathways_max_group_size: int = 100, cores:int = 1, savepath: Any = False, verbose:int = 0) -> (pd.DataFrame, pd.DataFrame, dict): # type: ignore
     """
-    Perform functional clustering analysis on a set of genes.
+        Perform functional clustering analysis on a set of genes.
 
-    Args:
-    - genes_1 (list): List of genes to be analyzed.
-    - genes_2 (list): List of genes to be analyzed.
-    - genes_3 (Any, optional): List of genes to be analyzed. Defaults to False.
-    - genes_4 (Any, optional): List of genes to be analyzed. Defaults to False.
-    - genes_5 (Any, optional): List of genes to be analyzed. Defaults to False.
-    - source_names (Any, optional): List of source names for the genes. Defaults to False.
-    - gene_dict (Any, optional): Dictionary of gene sets (as alternative to above; e.g. {'gene_set_1': ['gene1', 'gene2', ...], 'gene_set_2': ['gene3', 'gene4', ...]}). Defaults to False.
-    - string_version (str, optional): STRING version to use. Defaults to 'v11.0'. Options include 'v10.0', 'v11.0', 'v11.5', 'v12.0'.
-    - evidences (list, optional): List of evidences to be used for network cleaning. Defaults to ['all'].
-    - edge_confidence (str, optional): Edge confidence level for network cleaning. Defaults to 'highest'.
-    - custom_background (Any, optional): Custom background gene set. Defaults to 'string'. Options include 'string', 'ensembl', 'reactome', or user defined list.
-    - random_iter (int, optional): Number of random iterations for cluster enrichment analysis. Defaults to 100.
-    - inflation (Any, optional): Inflation parameter for MCL clustering. Defaults to None.
-    - pathways_min_group_size (int, optional): Minimum group size for functional enrichment. Defaults to 5.
-    - pathways_max_group_size (int, optional): Maximum group size for functional enrichment. Defaults to 100.
-    - cores (int, optional): Number of cores to use for multiprocessing. Defaults to 1.
-    - savepath (Any, optional): Path to save output files. Defaults to False.
-    - verbose (int, optional): Verbosity level. Defaults to 0.
+        Args:
+        - genes_1 (list): List of genes to be analyzed.
+        - genes_2 (list): List of genes to be analyzed.
+        - genes_3 (Any, optional): List of genes to be analyzed. Defaults to False.
+        - genes_4 (Any, optional): List of genes to be analyzed. Defaults to False.
+        - genes_5 (Any, optional): List of genes to be analyzed. Defaults to False.
+        - source_names (Any, optional): List of source names for the genes. Defaults to False.
+        - gene_dict (Any, optional): Dictionary of gene sets (as alternative to above; e.g. {'gene_set_1': ['gene1', 'gene2', ...], 'gene_set_2': ['gene3', 'gene4', ...]}). Defaults to False.
+        - true_go_terms (list, optional): List of GO terms to perform hypergeometric overlap and nDiffusion on. Should define as a list of GO terms IDs (e.g. ['GO:0006955', 'GO:0006954', 'GO:0006956']). Defaults to False.
+        - string_version (str, optional): STRING version to use. Defaults to 'v11.0'. Options include 'v10.0', 'v11.0', 'v11.5', 'v12.0'.
+        - evidences (list, optional): List of evidences to be used for network cleaning. Defaults to ['all'].
+        - edge_confidence (str, optional): Edge confidence level for network cleaning. Defaults to 'highest'.
+        - custom_background (Any, optional): Custom background gene set. Defaults to 'string'. Options include 'string', 'ensembl', 'reactome', or user defined list.
+        - random_iter (int, optional): Number of random iterations for cluster enrichment analysis. Defaults to 100.
+        - inflation (Any, optional): Inflation parameter for MCL clustering. Defaults to None.
+        - pathways_min_group_size (int, optional): Minimum group size for functional enrichment. Defaults to 5.
+        - pathways_max_group_size (int, optional): Maximum group size for functional enrichment. Defaults to 100.
+        - cores (int, optional): Number of cores to use for multiprocessing. Defaults to 1.
+        - savepath (Any, optional): Path to save output files. Defaults to False.
+        - verbose (int, optional): Verbosity level. Defaults to 0.
 
-    Returns:
-    - true_gene_network (pandas.DataFrame): DataFrame of the true gene network.
-    - true_cluster_df (pandas.DataFrame): DataFrame of the true gene clusters.
-    - true_clusters_enrichment_df_dict (dict): Dictionary of DataFrames containing functional enrichment results for each true gene cluster.
+        Returns:
+        - true_gene_network (pandas.DataFrame): DataFrame of the true gene network.
+        - true_cluster_df (pandas.DataFrame): DataFrame of the true gene clusters.
+        - true_clusters_enrichment_df_dict (dict): Dictionary of DataFrames containing functional enrichment results for each true gene cluster.
     """
     # Clean the network
     string_net, string_net_all_genes, string_net_degree_df = _load_clean_network(
@@ -1076,6 +1054,62 @@ def functional_clustering(genes_1: list = False, genes_2: list = False, genes_3:
         true_clusters_enrichment_df_dict,
         pval_merged_tuple_set
     )
+    # Assess true go term overlap with true_go_terms
+    if true_go_terms:
+        if savepath:
+            val_savepath = os.path.join(savepath, 'Functional_Clustering/Validation/')
+            os.makedirs(val_savepath, exist_ok=True)
+        else:
+            pass
+        
+        # parse out molecular function, biological process, and cellular
+        true_go_map, len_go, all_go = _parse_true_go_terms(true_go_terms, pathways_min_group_size, pathways_max_group_size)
+
+        # Loop through each set to test true positives
+        for true_go_type, true_go_ids in true_go_map.items():
+            if len(true_go_ids) == 0:
+                continue
+
+            for cluster_num, sub_dict in true_clusters_enrichment_df_dict.items():
+                if savepath:
+                    sub_savepath = os.path.join(val_savepath, f'{cluster_num}/{true_go_type}/')
+                    os.makedirs(sub_savepath, exist_ok=True)
+                # Filter for significant enrichment
+                query_enrich = sub_dict[true_go_type]
+                # Split the index into pathway_id and pathway_name
+                query_enrich['pathway_id'] = query_enrich.index.str.split('/').str[0]
+                # Annotate if the GO term is a true positive term
+                query_enrich['true_positive'] = query_enrich['pathway_id'].apply(lambda x: 1 if x in true_go_ids else 0)
+                sub_dict[true_go_type] = query_enrich
+                query_enrich = query_enrich[query_enrich['qval'] < 0.01]
+                query_terms = query_enrich['pathway_id'].unique().tolist()
+                if len(query_terms) == 0:
+                    continue
+
+                # Assess overlap with the true go terms
+                venn_img, p_val = _hypergeometric_overlap(query_terms, true_go_ids, len_go[true_go_type], f'{true_go_type}-({len(true_go_ids)})', plot_venn = True, plot_fontsize = 12, plot_fontface = 'sans-serif')
+                if not isinstance(venn_img, bool):
+                    venn_img.save(sub_savepath + f'{true_go_type}_overlap_venn.png')
+                
+                # Test how significant the overlap is by pulling 100 random phenotypes of same size
+                if p_val != 1:
+                    z_dist_plot, z_score, rando_phenotypes, rando_overlaps = _test_overlap_with_random(query_terms, true_go_ids, len_go[true_go_type], all_go[true_go_type], 100, f'{true_go_type}-({len(true_go_ids)})', 12, 'sans-serif', plot_venn = True)
+                    z_dist_plot.save(sub_savepath + f'{true_go_type}_z_dist_plot.png', bbox_inches = 'tight', pad_inches = 0.5)
+                    rando_phenotypes.to_csv(sub_savepath + f'{true_go_type}_rando_phenotypes.csv', index = False)
+                    rando_overlaps.to_csv(sub_savepath + f'{true_go_type}_rando_overlaps.csv', index = False)
+
+                # Run nDiffusion for GO terms
+                show_1_plot, show_1_z, show_2_plot, show_2_z = _go_term_ndiffusion(
+                    go_type = true_go_type,
+                    query_phenotypes = query_terms,
+                    true_id_terms = true_go_ids,
+                    true_keyword = true_go_type,
+                    set_1_name = f"Query GO Terms ({len(query_terms)})",
+                    n_iter = 100,
+                    cores = cores,
+                    savepath = sub_savepath
+                )
+
     if savepath:
         savepath = _fix_savepath(savepath)
         new_savepath = os.path.join(savepath, 'Functional_Clustering/')

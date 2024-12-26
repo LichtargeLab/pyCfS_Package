@@ -1,5 +1,5 @@
 # pyCfS
-Version 0.1.5<br>
+Version 0.1.6<br>
 The aggregation of Lichtarge Lab genotype-phenotype validation experiments<br>
 
 ## Installation
@@ -95,6 +95,7 @@ Clusters genes from multiple sources in STRING network. Can be used as a "functi
     - `string_version` (str): Version of STRING to use. Choose "v10.0", "v11.0", "v11.5", "v12.0". Default = "v11.0"
     - `evidences` (list): Evidences to compute edge weight. Options include ['neighborhood', 'fusion', 'coocurence', 'coexpression', 'experimental', 'database', 'textmining'] (Default = ['all']).
     - `edge_confidence` (str): Minimum edge weight for network. Options include 'all' (weight > 0), 'low' (weight > 0.2), 'medium' (weight > 0.4), 'high' (weight > 0.7), 'highest' (weight > 0.9). (Default = 'highest').
+    - `true_go_terms` (list): If defined, will perform hypergeometric overlap with these GO terms, randomizing overlap to compute a z score, and perform nDiffusion across the GO term hierarchical ontology. Should define as a list of GO terms IDs (e.g. ['GO:0006955', 'GO:0006954', 'GO:0006956']). The function will parse these into molecular function, biological process, and cellular component and perform analyses on each.
     - `custom_background` (str OR list): Background gene set for optimal inflation parameter and pathway enrichment. Options include 'string', 'ensembl', 'reactome' or user defined list (Default = 'string').
     - `random_iter` (int): # of random iterations to perform (Default = 100).
     - `inflation` (float): Set inflation parameter. If not set, algorithm determines optimal inflation from 1.5-3.0.
@@ -146,6 +147,7 @@ Identifies high-confidence genes associated with a given phenotype by pulling da
 
 
 ### `string_enrichment()`
+`Parallelized` <br>
 Assess gene set network connectivity and functional enrichment using the STRING API. Returns the same results as if you were using the web-browser website (string-db.org).
 #### Parameters:
 - `query` (list): List of genes
@@ -153,9 +155,11 @@ Assess gene set network connectivity and functional enrichment using the STRING 
     - `string_version` (str): Version of STRING to use. Choose "v11.0", "v11.5", "v12.0" ("v10.0" is deprecated). Default = "v11.0"
     - `edge_confidence` (str): Minimum edge weight for network. Options include 'all' (weight > 0), 'low' (weight > 0.15), 'medium' (weight > 0.4), 'high' (weight > 0.7), 'highest' (weight > 0.9). (Default = 'medium').
     - `species` (int): Species code from STRING (Default = 9606 (human))
+    - `true_go_terms` (list): If defined, will perform hypergeometric overlap with these GO terms, randomizing overlap to compute a z score, and perform nDiffusion across the GO term hierarchical ontology. Should define as a list of GO terms IDs (e.g. ['GO:0006955', 'GO:0006954', 'GO:0006956']). The function will parse these into molecular function, biological process, and cellular component and perform analyses on each.
     - `plot_fontsize` (int): Default = 14.
     - `plot_fontface` (str): Default = Avenir.
     - `savepath` (str): Parent path for saving.
+    - `cores` (int): # of cores for parallelization (Default = 1).
     - `verbose` (int): Verbosity toggle. Default = 0
 #### Returns:
 - `pd.DataFrame`: Table of network edges 
@@ -279,7 +283,7 @@ Assess the enrichment for co-mentions with specific keywords in PubMed. Signific
     - `plot_fontface` (str): Default = Avenir.
     - `plot_fontsize` (int): Default = 14.
     - `savepath` (str): File path.
-    - `verbose` (int): Verbosity argument. Default = no verbose (0).
+    - `verbose` (int): Verbosity argument. Default = no verbose (0). If 0, nothing is printed to terminal. If 1, prints progress to terminal.
 #### Returns:
 - `pd.DataFrame` : Dataframe of genes, co-mention counts, and PMIDs.
 - `dict` : Keys = enrichment_cutoffs values; Values = (# of query genes, z score).
@@ -297,6 +301,7 @@ Assess abnormal mouse phenotype enrichments from Mouse Genome Informatics (Data 
 - `query` (list): List of genes
 - **Optional**:
     - `custom_background` (str OR list): Background gene set. Options include 'ensembl', 'reactome', 'string_v10.0', 'string_v11.0', 'string_v11.5', 'string_v12.0', or user defined list (Default = 'ensembl').
+    - `omim_true_keyword` (str or int): Keyword or OMIM ID for true phenotypes. For example, if set as 125853, the function will subset for phenotypes associated with "Type 2 Diabetes". If set as "mammary", the function will subset for any phenotype mentioning "mammary". If provided, the function will test hypergeometric overlap with these phenotypes, randomizing the level of overlap, and perform nDiffusion across the MGI phenotype hierarchical ontology.
     - `random_iter` (int): Iterations for background run (Default = 5000).
     - `plot_sig_color` (str): Color for sig. phenotypes in strip plot (Default = red).
     - `plot_q_threshold` (float): Significance threshold for strip plot (Default = 0.05).
