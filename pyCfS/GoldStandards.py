@@ -989,14 +989,12 @@ def string_enrichment(query:list, string_version:str = 'v11.0', edge_confidence:
         true_go_map, len_go, all_go = _parse_true_go_terms(true_go_terms, 0, 10_000)
 
         for true_go_type, true_go_ids in true_go_map.items():
-            print(f"true go type: {true_go_type} -- {len(true_go_ids)} true go ids")
             if len(true_go_ids) == 0:
                 continue
             pd.Series(true_go_ids).to_csv(val_savepath + f'{true_go_type}_true_go_ids.csv', index = False, header = False)
             # Filter the functional enrichment for our go terms
             func_enrich_sub = functional_enrichment_df[functional_enrichment_df['category'] == go_term_name_map[true_go_type]]
             query_ids = func_enrich_sub['term'].unique().tolist()
-            print(f"true go type: {true_go_type} -- {len(query_ids)} query ids")
 
             # Assess overlap with the true go terms
             venn_img, p_val = _hypergeometric_overlap(query_ids, true_go_ids, len_go[true_go_type], f'{true_go_type} overlap with {true_go_type} true terms', plot_venn = True, plot_fontsize = 12, plot_fontface = 'sans-serif')
