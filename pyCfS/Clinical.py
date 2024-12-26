@@ -14,14 +14,17 @@ import requests
 from adjustText import adjust_text
 import seaborn as sns
 from PIL import Image
+import networkx as nx
 from typing import Any
 import io
+from matplotlib_venn import venn2
 import os
 import math
 import warnings
 import multiprocessing
 from multiprocessing import Manager
-from .utils import _fix_savepath, _load_open_targets_mapping, _get_avg_and_std_random_counts, _merge_random_counts, _define_background_list, _get_open_targets_gene_mapping
+from scipy.stats import hypergeom
+from .utils import _fix_savepath, _load_open_targets_mapping, _get_avg_and_std_random_counts, _merge_random_counts, _define_background_list, _get_open_targets_gene_mapping, _write_sum_txt, _get_results, _check_overlap_dict,  _get_degree_node, _parse_gene_input, _get_index_dict, _get_diffusion_param
 
 #region Mouse Phenotype
 def _load_mouse_phenotypes() -> (pd.DataFrame, list): # type: ignore
@@ -45,18 +48,19 @@ def _load_mouse_phenotypes() -> (pd.DataFrame, list): # type: ignore
 
 def _get_pheno_counts(matrix:pd.DataFrame, gene_list:list) -> dict:
     """
-    Given a matrix of gene expression data and a list of gene IDs, returns a dictionary
-    containing the frequency of each phenotype label in the matrix for the given gene IDs.
+        Given a matrix of gene expression data and a list of gene IDs, returns a dictionary
+        containing the frequency of each phenotype label in the matrix for the given gene IDs.
 
-    Args:
-    - matrix: pandas DataFrame containing gene expression data
-    - gene_list: list of gene IDs to filter the matrix by
+        Args:
+        - matrix: pandas DataFrame containing gene expression data
+        - gene_list: list of gene IDs to filter the matrix by
 
-    Returns:
-    - df_dict: dictionary containing the frequency of each phenotype label in the matrix
-        for the given gene IDs
+        Returns:
+        - df_dict: dictionary containing the frequency of each phenotype label in the matrix
+            for the given gene IDs
     """
     matrix = matrix[matrix['gene_ID'].isin(gene_list)]
+    matrix = matrix.drop_duplicates(subset = ['modelPhenotypeLabel', 'gene_ID'])
     df = pd.DataFrame(matrix.groupby('modelPhenotypeLabel')['gene_ID'].count())
     df.rename(columns={'gene_ID': 'freq'}, inplace=True)
     df_dict = df.to_dict()['freq']
@@ -314,7 +318,7 @@ def _get_output_matrix(target_counts:dict, random_dict:dict, model_pheno_label_g
     summary_df = summary_df[summary_df['RandomStdFreq'] != 0]
     summary_df = _or_fdr(summary_df)
     summary_df['geneMappings'] = summary_df.index.map(model_pheno_label_gene_mappings)
-    summary_df['geneMappings'] = summary_df['geneMappings'].apply(lambda x: [y for y in x if y in target_genes])
+    summary_df['geneMappings'] = summary_df['geneMappings'].apply(lambda x: list(set([y for y in x if y in target_genes])))
     summary_df['geneMappings'] = [",".join(x) for x in summary_df['geneMappings']]
 
     # Add the HighLevelPhenotypes
@@ -559,27 +563,399 @@ def _get_fdr_plot(summary_matrix:pd.DataFrame, bin_size:float, x_min:float, x_ma
     plt.close()
     return image
 
-def mouse_phenotype_enrichment(query:list, custom_background:Any = 'ensembl', random_iter:int = 5000, plot_sig_color:str = 'red', plot_q_threshold:float = 0.05, plot_show_labels:bool = False, plot_labels_to_show: list = [False], plot_fontface:str = 'Avenir', plot_fontsize:int = 14, cores:int = 1, savepath:Any = False, verbose:int = 0) -> (pd.DataFrame, Image, Image): # type: ignore
+def _load_clean_mgi_disease_phenotypes(omim_true_keyword:Any = '', verbose:int = 0) -> (pd.DataFrame, list, int, int): # type: ignore
     """
-    Performs a phenotype enrichment analysis on a list of genes using the Mouse Genome Informatics (MGI) database.
+    Loads and cleans the MGI disease phenotypes.
+    """
+    # Load the MGI gene disease file
+    mgi_gene_disease_stream = pkg_resources.resource_stream(__name__, 'data/MGI_Geno_DiseaseDO_12.15.24.rpt')
+    mgi_gene_disease_df = pd.read_csv(mgi_gene_disease_stream, sep = '\t', header = None, names = ['allele', 'allele_symbol', 'allele_id', 'genetic_background', 'mammalian_phenotype_id', 'pubmed_id', 'mgi_marker_accession_id', 'do_id', 'mim_id'])
+    # Load the MGI phenotype map file
+    mgi_phenotype_map_stream = pkg_resources.resource_stream(__name__, 'data/VOC_MammalianPhenotype_12.15.24.rpt')
+    mgi_phenotype_map = pd.read_csv(mgi_phenotype_map_stream, sep = '\t', header = None, names = ['mammalian_phenotype_id', 'term', 'description'])
+    all_phenotypes = mgi_phenotype_map['term'].unique().tolist()
+    total_phenotypes = len(all_phenotypes)
 
-    Args:
-    - query (list): A list of gene symbols to be tested for enrichment.
-    - custom_background (str): The gene set to be used as the background for the enrichment analysis. Default is 'ensembl'. Options include 'reactome', 'ensembl', 'string_v12.0', 'string_v11.5', 'string_v11.0', 'string_v10.0'. STRING background is all interactions > 0.15.
-    - random_iter (int): The number of random iterations to perform for the enrichment analysis. Default is 5000.
-    - plot_sig_color (str): The color to use for significant points in the enrichment plot. Default is 'red'.
-    - plot_q_threshold (float): The q-value threshold for significance in the enrichment plot. Default is 0.05.
-    - plot_show_labels (bool): Whether to show labels on the enrichment plot. Default is False.
-    - plot_labels_to_show (list): A list of phenotype labels to show on the enrichment plot. Default is [False].
-    - plot_fontface (str): The font face to use for the enrichment plot. Default is 'Avenir'.
-    - plot_fontsize (int): The font size to use for the enrichment plot. Default is 14.
-    - cores (int): The number of CPU cores to use for parallel processing. Default is 1.
-    - savepath (Any): The path to save the output files. Default is False.
+    # Merge the two dataframes on the mammalian_phenotype_id column
+    mgi_merge = mgi_gene_disease_df.merge(mgi_phenotype_map[['mammalian_phenotype_id', 'term']], on = 'mammalian_phenotype_id', how = 'left')
+    # Filter for OMIM or keyword
+    true_phenotypes = []
+    try:
+        omim_true_keyword = int(omim_true_keyword)
+        filt_df = mgi_merge[mgi_merge['mim_id'].str.contains(f'OMIM:{omim_true_keyword}')]
+        true_phenotypes = filt_df['term'].unique().tolist()
+    except:
+        true_phenotypes = [x for x in set(all_phenotypes) if omim_true_keyword in x]
 
-    Returns:
-    - summary_df (pandas.DataFrame): A summary dataframe of the enrichment analysis results.
-    - strip_plot (matplotlib.pyplot): A strip plot of the enrichment analysis results.
-    - fdr_plot (matplotlib.pyplot): A plot of the false discovery rate (FDR) distribution for the enrichment analysis results.
+    if not true_phenotypes:
+        if verbose > 0:
+            warnings.warn(f"No phenotypes found for {omim_true_keyword}")
+    return true_phenotypes, total_phenotypes, all_phenotypes
+
+def _plot_overlap_venn(query_len:int, goldstandard_len:int, overlap:list, pval:float, show_genes: bool, show_pval: bool, query_color:str, goldstandard_color:str, fontsize:int, fontface:str, goldstandard_name:str) -> None:
+    """
+        Plots a Venn diagram representing the overlap between two sets and returns the plot as an image.
+
+        This function creates a Venn diagram to visualize the overlap between a query set and a gold standard set.
+        It displays the overlap size, the p-value of the overlap, and the names of the overlapping items. If there
+        are no overlapping genes or if the query set is empty, the function will print a relevant message and return False.
+
+        Args:
+            query_len (int): The number of elements in the query set.
+            goldstandard_len (int): The number of elements in the gold standard set.
+            overlap (list): A list of overlapping elements between the query and gold standard sets.
+            pval (float): The p-value representing the statistical significance of the overlap.
+            query_color (str): The color to be used for the query set in the Venn diagram.
+            goldstandard_color (str): The color to be used for the gold standard set in the Venn diagram.
+            fontsize (int): The font size to be used in the Venn diagram.
+            fontface (str): The font face to be used in the Venn diagram.
+
+        Returns:
+            Image: An image object of the Venn diagram. If there is no overlap or the query is empty, returns False.
+    """
+    if overlap == 0:
+        return False
+    elif query_len == 0:
+        return False
+    # Create Venn Diagram
+    plt.rcParams.update({'font.size': fontsize,
+                         'font.family': fontface})
+    _ = plt.figure(figsize=(10, 5))
+    out = venn2(subsets=((query_len - overlap),
+                        (goldstandard_len - overlap),
+                        overlap),
+                        set_labels=('Query', f'{goldstandard_name}'),
+                        set_colors=('white', 'white'),
+                        alpha=0.7)
+    overlap1 = out.get_patch_by_id("A")
+    overlap1.set_edgecolor(query_color)
+    overlap1.set_linewidth(3)
+    overlap2 = out.get_patch_by_id("B")
+    overlap2.set_edgecolor(goldstandard_color)
+    overlap2.set_linewidth(3)
+
+    for text in out.set_labels:
+        text.set_fontsize(fontsize + 2)
+    for text in out.subset_labels:
+        if text == None:
+            continue
+        text.set_fontsize(fontsize)
+    if show_genes:
+        plt.text(0, -0.78,
+                ", ".join(overlap),
+                horizontalalignment='center',
+                verticalalignment='top',
+                fontsize=fontsize-2)
+    if show_pval:
+        if pval < 0.01:
+            plt.text(0, -0.7,
+                    str("p = " + f"{pval:.2e}"),
+                    horizontalalignment='center',
+                    verticalalignment='top',
+                    fontsize=fontsize-2)
+        else:
+            plt.text(0, -0.7,
+                str("p = " + f"{pval:.2f}"),
+                horizontalalignment='center',
+                verticalalignment='top',
+                fontsize=fontsize-2)
+    #plt.title("Gold Standard Overlap", fontsize=fontsize+4)
+    plt.tight_layout(pad = 2.0)
+    buffer = io.BytesIO()
+    plt.savefig(buffer, format = 'png', dpi = 300)
+    buffer.seek(0)
+    image = Image.open(buffer)
+    plt.close()
+    return image
+
+def _hypergeometric_overlap(query_phenotypes: list, true_phenotypes:list, total_phenotypes:int, omim_true_keyword:int, plot_fontsize:int, plot_fontface:str, plot_venn:bool = False,) -> (Image, float): # type: ignore
+    """
+    Returns a venn diagram and p-value for the hypergeometric overlap between the true phenotypes and all phenotypes.
+    """
+    # Calculate hypergeometric overlap
+    overlapping_phenotypes = [phenotype for phenotype in query_phenotypes if phenotype in true_phenotypes]
+    background_size = total_phenotypes
+    len_query = len(query_phenotypes)
+    len_gs = len(true_phenotypes)
+    len_overlap = len(overlapping_phenotypes)
+    p_val = hypergeom.sf(len_overlap - 1, background_size, len_gs, len_query)
+
+    # Plot venn diagram
+    if plot_venn:
+        venn_img = _plot_overlap_venn(
+            query_len = len_query,
+            goldstandard_len = len_gs,
+            overlap = len_overlap,
+            pval = p_val,
+            show_genes = False,
+            show_pval = True,
+            query_color = 'red',
+            goldstandard_color = 'gray',
+            fontsize = plot_fontsize,
+            fontface = plot_fontface,
+            goldstandard_name = f'OMIM:{omim_true_keyword}'
+        )
+
+    return venn_img, p_val
+
+def _test_overlap_with_random(query_phenotypes: list, true_phenotypes:list, total_phenotypes:int, all_phenotypes:list, random_iter:int, omim_true_keyword:int, plot_fontsize:int, plot_fontface:str, plot_venn:bool = False) -> (Image, float): # type: ignore
+    """
+    Tests the overlap between the query phenotypes and the true phenotypes by pulling 100 random phenotypes of the same size and testing the overlap.
+    """
+    # Pull 100 sets of random phenotypes of same size
+    len_query = len(query_phenotypes)
+    true_overlap = len([phenotype for phenotype in query_phenotypes if phenotype in true_phenotypes])
+    rando_phenotypes = []
+    rando_overlaps = []
+    rando_pvals = []
+    for _ in range(random_iter):
+        random_pheno = pd.Series(all_phenotypes).sample(len_query).tolist()
+        rando_phenotypes.append(random_pheno)
+        # Calculate the hypergeometric overlap
+        overlapping_phenotypes = [phenotype for phenotype in random_pheno if phenotype in true_phenotypes]
+        _, p_val = _hypergeometric_overlap(random_pheno, true_phenotypes, total_phenotypes, omim_true_keyword, plot_fontsize, plot_fontface, plot_venn = plot_venn)
+        rando_pvals.append(p_val)
+        rando_overlaps.append(len(overlapping_phenotypes))
+    
+    # Calculate the z-score
+    z_score = (true_overlap - np.mean(rando_overlaps)) / np.std(rando_overlaps)
+
+    # Plot the z-score distribution
+    _, ax = plt.subplots(figsize=(6, 4), tight_layout=True)
+    ax.hist(rando_overlaps, color='gray', edgecolor='black', density=False, bins=20, alpha = 0.5, label = 'Random Overlap')
+    ax.axvline(true_overlap, color='red', linestyle='dashed', label = 'True Overlap')
+    ax.spines['right'].set_visible(False)
+    ax.spines['top'].set_visible(False)
+    ax.legend()
+    ax.set_xlabel('# of phenotypes overlapping', size=14)
+    ax.set_ylabel('Count', size=14)
+    ax.set_title('Z-score: {:.2f}'.format(z_score), size=14)
+    buffer = io.BytesIO()
+    plt.savefig(buffer, format = 'png', dpi = 300)
+    buffer.seek(0)
+    image = Image.open(buffer)
+    plt.close()
+    
+    return image, z_score, rando_phenotypes, rando_overlaps
+
+def _get_mgi_graph(mgi_graph:nx.Graph) -> (list, np.array, dict, list): # type: ignore
+    graph_node = list(mgi_graph.nodes())
+    adj_matrix = nx.to_scipy_sparse_array(mgi_graph)
+    node_degree = dict(nx.degree(mgi_graph))
+    g_degree = node_degree.values()
+    return graph_node, adj_matrix, node_degree, g_degree
+
+def _load_mgi_network():
+    # LOad the graphml file
+    graph_stream = pkg_resources.resource_stream(__name__, 'data/mp_network_undirected_weight1.graphml')
+    G = nx.read_graphml(graph_stream)
+    # Get all nodes
+    nodes = list(G.nodes())
+    return G, nodes
+
+def _mouse_ndiffusion(query_phenotypes: list, omim_true_keyword:int, omim_id_phenotypes:list, set_1_name:str, n_iter: int = 100, cores:int =1, savepath:str = False, verbose: int = 0) -> (Image, float, Image, float): # type: ignore
+    """
+        Performs network diffusion analysis between two sets of genes.
+
+        Args:
+            - set_1 (list): List of genes in set 1.
+            - set_2 (list): List of genes in set 2.
+            - set_1_name (str, optional): Name of set 1. Defaults to 'Set_1'.
+            - set_2_name (str, optional): Name of set 2. Defaults to 'Set_2'.
+            - string_version (str, optional): STRING version to use. Defaults to 'v11.0'. Options include 'v10.0', 'v11.0', 'v11.5', 'v12.0'.
+            - evidences (list, optional): List of evidence types to consider. Defaults to ['all']. Options include 'experiments', 'databases', 'textmining', 'coexpression', 'neighborhood', 'fusion', 'cooccurrence'.
+            - edge_confidence (str, optional): Confidence level for edges. Defaults to 'all'. Options include 'all', 'low' (>0.15), 'medium' (0.4), 'high' (0.7), 'highest' (0.9).
+            - custom_background (Any, optional): Custom background gene set. Defaults to 'string'. Options include 'string', 'ensembl', 'reactome'.
+            - n_iter (int, optional): Number of diffusion iterations. Defaults to 100.
+            - cores (int, optional): Number of cores to use for parallel processing. Defaults to 1.
+            - savepath (str, optional): Path to save the results. Defaults to False.
+            - verbose (int, optional): Verbosity level. Defaults to 0.
+
+        Returns:
+            Image: AUROC plot for show_1 - "from Set1Exclusive to Set2"; if there is no overlap, then "from Set1 to Set2"
+            float: AUROC value for show_1 - randomized set1, degree-matched
+            Image: AUROC plot for show_2 - "from Set2Exclusive to Set1"; if there is no overlap, then "from Set2 to Set1"
+            float: AUROC value for show_2 - randomized set2, degree-matched
+    """
+    # Set parameters
+    group1_name = set_1_name
+    group2_name = "OMIM_" + str(omim_true_keyword)
+
+    # Load MGI Network
+    mgi_net, mgi_net_all_phenotypes = _load_mgi_network()
+
+    # Get network and diffusion parameters
+    graph_node, adj_matrix, node_degree, g_degree = _get_mgi_graph(mgi_net)
+    first_node_degree = list(node_degree.keys())[:5]
+
+    ps = _get_diffusion_param(adj_matrix)
+    graph_node_index = _get_index_dict(graph_node)
+    gp1_only_dict, gp2_only_dict, overlap_dict, other_dict =_parse_gene_input(
+        query_phenotypes, omim_id_phenotypes, graph_node, graph_node_index, node_degree, verbose = verbose
+    )
+    degree_nodes = _get_degree_node(g_degree, node_degree, other_dict['node'])
+    gp1_all_dict, gp2_all_dict, exclusives_dict = _check_overlap_dict(overlap_dict, gp1_only_dict, gp2_only_dict)
+
+    # Run diffusion
+    # If there is no overlap, no genes specific to set_1, and no genes specific to set_2
+    if overlap_dict['node'] != [] and gp1_only_dict['node'] != [] and gp2_only_dict['node'] != []:
+        # From group 1 exclusive to group 2 all:
+        r_gp1o_gp2 = _get_results(
+            gp1_only_dict, gp2_all_dict, group1_name+'Excl', group2_name, show = '__SHOW_1_',
+            degree_nodes = degree_nodes, other_dict = other_dict, graph_node_index = graph_node_index, graph_node = graph_node, ps = ps, cores = cores, repeat = n_iter
+        )
+        show_1_plot = r_gp1o_gp2[1][0]
+        show_1_z = r_gp1o_gp2[0][1][1]
+        # From group 2 exclusive to group 1 all:
+        r_gp2o_gp1 = _get_results(
+            gp2_only_dict, gp1_all_dict, group2_name+'Excl', group1_name, show = '__SHOW_2_',
+            degree_nodes = degree_nodes, other_dict = other_dict, graph_node_index = graph_node_index, graph_node = graph_node, ps = ps, cores = cores, repeat = n_iter
+        )
+        show_2_plot = r_gp2o_gp1[1][0]
+        show_2_z = r_gp2o_gp1[0][1][1]
+        # From group 1 exclusive to group 2 exclusive:
+        r_gp1o_gp2o = _get_results(
+            gp1_only_dict, gp2_only_dict, group1_name+'Excl', group2_name+'Excl',
+            degree_nodes = degree_nodes, other_dict = other_dict, graph_node_index = graph_node_index, graph_node = graph_node, ps = ps, cores = cores, repeat = n_iter
+        )
+        # From group 2 exclusive to group 1 exclusive:
+        r_gp2o_gp1o = _get_results(
+            gp2_only_dict, gp1_only_dict, group2_name+'Excl', group1_name+'Excl',
+            degree_nodes = degree_nodes, other_dict = other_dict, graph_node_index = graph_node_index, graph_node = graph_node, ps = ps, cores = cores, repeat = n_iter
+        )
+        # From group 1 exclusive to the overlap
+        r_gp1o_overlap = _get_results(
+            gp1_only_dict, overlap_dict, group1_name+'Excl', 'Overlap', degree_nodes = degree_nodes, other_dict = other_dict, graph_node_index = graph_node_index, graph_node = graph_node, ps = ps, cores = cores, repeat = n_iter
+        )
+        # From group 2 exclusive to the overlap
+        r_gp2o_overlap = _get_results(
+            gp2_only_dict, overlap_dict, group2_name+'Excl', 'Overlap', degree_nodes = degree_nodes, other_dict = other_dict, graph_node_index = graph_node_index, graph_node = graph_node, ps = ps, cores = cores, repeat = n_iter
+        )
+        # From overlap to (group 1 exclusive and group 2 exlusive)
+        r_overlap_exclusives = _get_results(
+            overlap_dict, exclusives_dict,'Overlap', 'Exclus', degree_nodes = degree_nodes, other_dict = other_dict, graph_node_index = graph_node_index, graph_node = graph_node, ps = ps, cores = cores, repeat = n_iter
+        )
+        # Record results to not write
+        r_gp1_gp2 = False
+        r_gp2_gp1 = False
+        r_overlap_gp1o = False
+        r_overlap_gp2o = False
+    # For when group 2 is entirely part of group 1
+    elif overlap_dict['node'] != [] and gp2_only_dict['node'] == []:
+        # From group 1 exclusive to overlap/group 2
+        r_gp1o_overlap = _get_results(
+            gp1_only_dict, overlap_dict, group1_name+'Excl', 'Overlap or'+group2_name, degree_nodes = degree_nodes, other_dict = other_dict, graph_node_index = graph_node_index, graph_node = graph_node, ps = ps, cores = cores, repeat = n_iter
+        )
+        show_1_plot = r_gp1o_overlap[1][0]
+        show_1_z = r_gp1o_overlap[0][1][1]
+        # From overlap/group 2 to group 1 exclusive
+        r_overlap_gp1o = _get_results(
+            overlap_dict, gp1_only_dict,'Overlap or'+group2_name, group1_name+'Excl', degree_nodes = degree_nodes, other_dict = other_dict, graph_node_index = graph_node_index, graph_node = graph_node, ps = ps, cores = cores, repeat = n_iter
+        )
+        show_2_plot = r_overlap_gp1o[1][0]
+        show_2_z = r_overlap_gp1o[0][1][1]
+        # Record results to not write
+        r_gp1o_gp2 = False
+        r_gp2o_gp1 = False
+        r_gp1o_gp2o = False
+        r_gp2o_gp1o = False
+        r_gp2o_overlap = False
+        r_overlap_exclusives = False
+        r_gp1_gp2 = False
+        r_gp2_gp1 = False
+        r_overlap_gp2o = False
+    # For when group 1 is entirely part of group 2
+    elif overlap_dict['node'] != [] and gp1_only_dict['node'] == []:
+        # From group 2 exclusive to overlap/group 1
+        r_gp2o_overlap = _get_results(
+            gp2_only_dict, overlap_dict, group2_name+'Excl', 'Overlap or '+group1_name, degree_nodes = degree_nodes, other_dict = other_dict, graph_node_index = graph_node_index, graph_node = graph_node, ps = ps, cores = cores, repeat = n_iter
+        )
+        show_1_plot = r_gp2o_overlap[1][0]
+        show_1_z = r_gp2o_overlap[0][1][1]
+        # From overlap/group 1 to group 2 exclusive
+        r_overlap_gp2o = _get_results(
+            overlap_dict, gp2_only_dict, 'Overlap or'+group1_name, group2_name+'Excl', degree_nodes = degree_nodes, other_dict = other_dict, graph_node_index = graph_node_index, graph_node = graph_node, ps = ps, cores = cores, repeat = n_iter
+        )
+        show_2_plot = r_overlap_gp2o[1][0]
+        show_2_z = r_overlap_gp2o[0][1][1]
+        # Record what to save
+        r_gp1o_gp2 = False
+        r_gp2o_gp1 = False
+        r_gp1o_gp2o = False
+        r_gp2o_gp1o = False
+        r_gp1o_overlap = False
+        r_overlap_exclusives = False
+        r_gp1_gp2 = False
+        r_gp2_gp1 = False
+        r_overlap_gp1o = False
+    # For when there is no overlap b/w two groups
+    else:
+        # From group 1 to group 2:
+        r_gp1o_gp2o = _get_results(
+            gp1_only_dict, gp2_only_dict, group1_name, group2_name, show = '__SHOW_1_',
+            degree_nodes = degree_nodes, other_dict = other_dict, graph_node_index = graph_node_index, graph_node = graph_node, ps = ps, cores = cores, repeat = n_iter
+        )
+        show_1_plot = r_gp1o_gp2o[1][0]
+        show_1_z = r_gp1o_gp2o[0][1][1]
+        # From group 2 to group 1:
+        r_gp2o_gp1o = _get_results(
+            gp2_only_dict, gp1_only_dict, group2_name, group1_name, show = '__SHOW_2_',
+            degree_nodes = degree_nodes, other_dict = other_dict, graph_node_index = graph_node_index, graph_node = graph_node, ps = ps, cores = cores, repeat = n_iter
+        )
+        show_2_plot = r_gp2o_gp1o[1][0]
+        show_2_z = r_gp2o_gp1o[0][1][1]
+        # Record what to save
+        r_gp1o_gp2 = False
+        r_gp2o_gp1 = False
+        r_gp1o_overlap = False
+        r_gp2o_overlap = False
+        r_overlap_exclusives = False
+        r_gp1_gp2 = False
+        r_gp2_gp1 = False
+        r_overlap_gp1o = False
+        r_overlap_gp2o = False
+
+    if savepath:
+        savepath = _fix_savepath(savepath)
+        new_savepath = os.path.join(savepath, 'nDiffusion_MGI/')
+        os.makedirs(new_savepath, exist_ok=True)
+        _write_sum_txt(
+            new_savepath, group1_name, group2_name, gp1_only_dict, gp2_only_dict, overlap_dict,
+            r_gp1o_gp2 = r_gp1o_gp2,
+            r_gp2o_gp1 = r_gp2o_gp1,
+            r_gp1o_gp2o = r_gp1o_gp2o,
+            r_gp2o_gp1o = r_gp2o_gp1o,
+            r_gp1o_overlap = r_gp1o_overlap,
+            r_gp2o_overlap = r_gp2o_overlap,
+            r_overlap_exclusives = r_overlap_exclusives,
+            r_gp1_gp2 = r_gp1_gp2,
+            r_gp2_gp1 = r_gp2_gp1,
+            r_overlap_gp1o = r_overlap_gp1o,
+            r_overlap_gp2o = r_overlap_gp2o
+        )
+    return show_1_plot, show_1_z, show_2_plot, show_2_z
+
+def mouse_phenotype_enrichment(query:list, omim_true_keyword:Any = '', custom_background:Any = 'ensembl', random_iter:int = 5000, plot_sig_color:str = 'red', plot_q_threshold:float = 0.05, plot_show_labels:bool = False, plot_labels_to_show: list = [False], plot_fontface:str = 'Avenir', plot_fontsize:int = 14, cores:int = 1, savepath:Any = False, verbose:int = 0) -> (pd.DataFrame, Image, Image): # type: ignore
+    """
+        Performs a phenotype enrichment analysis on a list of genes using the Mouse Genome Informatics (MGI) database.
+
+        Args:
+        - query (list): A list of gene symbols to be tested for enrichment.
+        - custom_background (str): The gene set to be used as the background for the enrichment analysis. Default is 'ensembl'. Options include 'reactome', 'ensembl', 'string_v12.0', 'string_v11.5', 'string_v11.0', 'string_v10.0'. STRING background is all interactions > 0.15.
+        - random_iter (int): The number of random iterations to perform for the enrichment analysis. Default is 5000.
+        - plot_sig_color (str): The color to use for significant points in the enrichment plot. Default is 'red'.
+        - plot_q_threshold (float): The q-value threshold for significance in the enrichment plot. Default is 0.05.
+        - plot_show_labels (bool): Whether to show labels on the enrichment plot. Default is False.
+        - plot_labels_to_show (list): A list of phenotype labels to show on the enrichment plot. Default is [False].
+        - plot_fontface (str): The font face to use for the enrichment plot. Default is 'Avenir'.
+        - plot_fontsize (int): The font size to use for the enrichment plot. Default is 14.
+        - cores (int): The number of CPU cores to use for parallel processing. Default is 1.
+        - savepath (Any): The path to save the output files. Default is False.
+
+        Returns:
+        - summary_df (pandas.DataFrame): A summary dataframe of the enrichment analysis results.
+        - strip_plot (matplotlib.pyplot): A strip plot of the enrichment analysis results.
+        - fdr_plot (matplotlib.pyplot): A plot of the false discovery rate (FDR) distribution for the enrichment analysis results.
     """
     background_dict, background_name = _define_background_list(custom_background, just_genes = True, verbose = verbose)
     mgi_df, mgi_genes = _load_mouse_phenotypes()
@@ -632,6 +1008,39 @@ def mouse_phenotype_enrichment(query:list, custom_background:Any = 'ensembl', ra
     p_val_plot = _get_pval_plot(summary_df, 0.0005, 0, 0.01)
     fdr_plot = _get_fdr_plot(summary_df, 0.0005, 0, 0.01)
 
+    # Evaluate the level of true positive phenotypes
+    if omim_true_keyword != '':
+        # Get the true phenotypes
+        true_phenotypes, total_phenotypes, all_phenotypes = _load_clean_mgi_disease_phenotypes(omim_true_keyword)
+
+        if true_phenotypes:
+            # Annotate summary_df with 1 if true phenotypes are here
+            summary_df[f'{omim_true_keyword}_pheno_overlap'] = summary_df['modelPhenotypeLabel'].apply(lambda x: 1 if x in true_phenotypes else 0)
+
+            # Look at hypergeometric overlap
+            query_phenotypes = summary_df['modelPhenotypeLabel'][summary_df['fdr']<= plot_q_threshold].tolist()
+            venn_img, p_val = _hypergeometric_overlap(query_phenotypes, true_phenotypes, total_phenotypes, omim_true_keyword, plot_venn = True, plot_fontsize = plot_fontsize, plot_fontface = plot_fontface)
+
+            # Test how significant the overlap is by pulling 100 random phenotypes of same size
+            z_dist_plot, z_score, rando_phenotypes, rando_overlaps = _test_overlap_with_random(query_phenotypes, true_phenotypes, total_phenotypes, all_phenotypes, 100, omim_true_keyword, plot_fontsize, plot_fontface, plot_venn = True)
+
+            # Run nDiffusion for MGI Phenotypes
+            if savepath:
+                savepath = _fix_savepath(savepath)
+                ndiff_save_path = os.path.join(savepath, f'MGI_Mouse_Phenotypes/Validation-{omim_true_keyword}')
+                os.makedirs(ndiff_save_path, exist_ok = True)
+            show_1_plot, show_1_z, show_2_plot, show_2_z = _mouse_ndiffusion(
+                query_phenotypes = query_phenotypes,
+                omim_id_phenotypes = true_phenotypes,
+                omim_true_keyword = omim_true_keyword,
+                set_1_name = f"Query Phenotypes ({len(query_phenotypes)})",
+                n_iter = 100,
+                cores = cores,
+                savepath = ndiff_save_path
+            )
+        else:
+            warnings.warn(f"No true phenotypes found for {omim_true_keyword}")
+
     # Output files
     if savepath:
         savepath = _fix_savepath(savepath)
@@ -642,7 +1051,15 @@ def mouse_phenotype_enrichment(query:list, custom_background:Any = 'ensembl', ra
         z_dist_plot.save(new_savepath + "MGI_Lower-Level_PhenoEnrichment_ZscoreDist.png")
         p_val_plot.save(new_savepath + "MGI_Lower-Level_PhenoEnrichment_PvalDist.png")
         fdr_plot.save(new_savepath + "MGI_Lower-Level_PhenoEnrichment_FdrDist.png")
-
+        # Save true tests
+        if omim_true_keyword != '':
+            valid_savepath = os.path.join(new_savepath, f'Validation-{omim_true_keyword}/')
+            os.makedirs(valid_savepath, exist_ok=True)
+            if not isinstance(venn_img, bool):
+                venn_img.save(valid_savepath + "MGI_Phenotype_Overlap_Venn.png")
+            z_dist_plot.save(valid_savepath + "MGI_Phenotype_Overlap_ZscoreDist.png")
+            pd.Series(rando_phenotypes).to_csv(valid_savepath + "MGI_Phenotype_Overlap_RandomPhenotypes.csv", index = False)
+            pd.Series(rando_overlaps).to_csv(valid_savepath + "MGI_Phenotype_Overlap_RandomOverlaps.csv", index = False)
     return summary_df, strip_plot, fdr_plot
 #endregion
 
