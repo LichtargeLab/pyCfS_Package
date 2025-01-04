@@ -957,8 +957,6 @@ def string_enrichment(query:list, string_version:str = 'v11.0', edge_confidence:
     else:
         version = string_version
         raise ValueError("STRING v10.0 is archived and API endpoints have been disconnected. Please select another version")
-        if verbose > 0:
-            print(f"STRING API version: {version}")
 
     # Get the STRING interactions network file
     network = _string_api_call(version = string_version, genes = query, method = 'network_interactions', score_threshold = edge_weight, species = species)
@@ -998,10 +996,11 @@ def string_enrichment(query:list, string_version:str = 'v11.0', edge_confidence:
 
             # Assess overlap with the true go terms
             venn_img, p_val = _hypergeometric_overlap(query_ids, true_go_ids, len_go[true_go_type], f'{true_go_type} overlap with {true_go_type} true terms', plot_venn = True, plot_fontsize = 12, plot_fontface = 'sans-serif')
-            venn_img.save(val_savepath + f'{true_go_type}_venn.png', bbox_inches = 'tight', pad_inches = 0.5)
 
             # Test how significant the overlap is 
             if p_val != 1:
+                venn_img.save(val_savepath + f'{true_go_type}_venn.png', bbox_inches = 'tight', pad_inches = 0.5)
+                
                 z_dist_plot, z_score, rando_phenotypes, rando_overlaps = _test_overlap_with_random(query_ids, true_go_ids, len_go[true_go_type], all_go[true_go_type], 100, f'{true_go_type}-({len(true_go_ids)})', 12, 'sans-serif', plot_venn = True)
                 z_dist_plot.save(val_savepath + f'{true_go_type}_z_dist_plot.png', bbox_inches = 'tight', pad_inches = 0.5)
                 pd.Series(rando_phenotypes).to_csv(val_savepath + f'{true_go_type}_rando_phenotypes.csv', index = False, header = False)
