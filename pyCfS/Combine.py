@@ -1095,8 +1095,8 @@ def functional_clustering(genes_1: list = False, genes_2: list = False, genes_3:
                 if p_val != 1:
                     z_dist_plot, z_score, rando_phenotypes, rando_overlaps = _test_overlap_with_random(query_terms, true_go_ids, len_go[true_go_type], all_go[true_go_type], 100, f'{true_go_type}-({len(true_go_ids)})', 12, 'sans-serif', plot_venn = True)
                     z_dist_plot.save(sub_savepath + f'{true_go_type}_z_dist_plot.png', bbox_inches = 'tight', pad_inches = 0.5)
-                    rando_phenotypes.to_csv(sub_savepath + f'{true_go_type}_rando_phenotypes.csv', index = False)
-                    rando_overlaps.to_csv(sub_savepath + f'{true_go_type}_rando_overlaps.csv', index = False)
+                    pd.Series(rando_phenotypes).to_csv(sub_savepath + f'{true_go_type}_rando_phenotypes.csv', index = False, header = False)
+                    pd.Series(rando_overlaps).to_csv(sub_savepath + f'{true_go_type}_rando_overlaps.csv', index = False, header = False)
 
                 # Run nDiffusion for GO terms
                 show_1_plot, show_1_z, show_2_plot, show_2_z = _go_term_ndiffusion(
