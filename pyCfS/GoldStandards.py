@@ -2204,10 +2204,10 @@ def _calculate_fishers_exact(gene_snp_dict:dict, all_gene_dict:dict, final_genes
         'all_gene_dict' with SNPs but not in 'final_genes', and true negatives (tn) as genes not associated with any SNPs in both dictionaries.
         The p-value is calculated using the 'greater' alternative hypothesis in Fisher's Exact Test, indicating a one-tailed test.
     """
-    tp = len(final_genes)
-    fp = len(gene_snp_dict.keys()) - tp
-    fn = len([k for k, v in all_gene_dict.items() if len(v) > 0]) - tp
-    tn = len([x for x in all_gene_dict.keys() if x not in final_genes and x not in gene_snp_dict.keys()])
+    tp = len(final_genes) # Query genes that are within x Mbp of a GWAS SNP
+    fp = len(gene_snp_dict.keys()) - tp # Query genes that are not within x Mbp of a GWAS SNP
+    fn = len([k for k, v in all_gene_dict.items() if len(v) > 0]) - tp # Background genes that are within x Mbp of a GWAS SNP
+    tn = len([x for x in all_gene_dict.keys() if x not in final_genes and x not in gene_snp_dict.keys()]) - fn # Background genes that are not within x Mbp of a GWAS SNP
     _, pval = fisher_exact(np.array([[tp, fp], [fn, tn]]), alternative='greater')
     return tp, fp, fn, tn, pval
 
@@ -2498,8 +2498,6 @@ def _fetch_random_pubmed(query: list, disease_query: str, custom_terms: str, ema
         out_query = disease_query
     # Add a progress bar using tqdm
     for i in tqdm(range(trials), desc="Fetching random PubMed data", ncols=100, disable = (verbose == 0)):
-        if i % 10 == 0 and verbose > 0:
-            print(f" Random Trial : {i}")
         rng = np.random.default_rng(i * 3)
         randgenes = rng.choice(background_genes, size=len(query), replace=False).tolist()
         tempdf = pd.DataFrame(columns=['Count'])
