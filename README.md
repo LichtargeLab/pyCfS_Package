@@ -1,5 +1,5 @@
 # pyCfS
-Version 0.1.7<br>
+Version 0.1.7.1<br>
 The aggregation of Lichtarge Lab genotype-phenotype validation experiments<br>
 
 ## Installation
@@ -31,7 +31,7 @@ See "example.ipynb" for help
 #### Available Methods
 - `pyCFS.Combine`
     - `consensus`
-    - `functional_clustering
+    - `functional_clustering`
     - `statistical_combination`
 - `pyCFS.GoldStandards`
     - `generate_ot_goldstandards`

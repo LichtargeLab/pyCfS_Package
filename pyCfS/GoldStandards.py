@@ -2357,7 +2357,7 @@ def _entrez_search(gene:str, disease:str, custom_terms:str, email:str, api_key:s
         new_query = f'"{gene}" AND ("{disease}") AND (("gene") OR ("protein"))'
     if gene and custom_terms:
         new_query = f'"{gene}" AND {custom_terms}'
-    retries = 3
+    retries = 5
     for attempt in range(retries):
         try:
             handle = Entrez.esearch(
@@ -2371,13 +2371,15 @@ def _entrez_search(gene:str, disease:str, custom_terms:str, email:str, api_key:s
             results = Entrez.read(handle)
             handle.close()
             return results
-        except HTTPError as e:
-            if e.code == 502:
+        except (HTTPError, RuntimeError) as e:
+            if "Search Backend failed" in str(e) and attempt > retries:
                 # Specific action for 502 Bad Gateway error
                 raise RuntimeError('Received a 502 Bad Gateway error from the PubMed server. Please try again later.')
-            elif attempt < retries - 1:
-                time.sleep(200)
-            else:
+            elif "Search Backend failed" in str(e) and attempt <= retries:
+                time.sleep(60)
+            elif "Too many requests" in str(e) and attempt <= retries:
+                time.sleep(60)
+            elif attempt > retries:
                 raise RuntimeError(f'Failed to retrieve data after {retries} attempts due to error: {e}')
         except (IndexError, URLError, IncompleteRead) as e:
             if attempt < retries - 1:
