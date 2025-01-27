@@ -1016,7 +1016,7 @@ def _go_term_ndiffusion(go_type:str, query_phenotypes: list, true_keyword:int, t
             r_overlap_gp2o = r_overlap_gp2o
         )
     return show_1_plot, show_1_z, show_2_plot, show_2_z
-
+#endregion
 
 #region nDiffusion functions
 def _get_graph(network: pd.DataFrame) -> (nx.Graph, list, np.array, dict, list): # type: ignore
@@ -1423,10 +1423,11 @@ def _get_rand_degree(pred_degree_count: list, degree_nodes: list, iteration: int
     """
     rand_node, rand_degree = [], {}
     for i in pred_degree_count:
+        # Initialize the list for each degree
         rand_degree[i] = []
         count = pred_degree_count[i] * iteration
         lst = []
-        modifier = 1
+        modifier = 0
         cnt = 0
         if float(i) <= 100:
             increment = 1
@@ -1445,8 +1446,11 @@ def _get_rand_degree(pred_degree_count: list, degree_nodes: list, iteration: int
                 lst += node_select[0:(count - len(lst))]
             except:
                 pass
+            # Increase the degree bin size we accept as "matching" by increment
             modifier += increment
+            # Increase the counter to prevent infinite loops
             cnt += 1
+            # Remove the nodes that are already in rand_node
             overlap = set(rand_node).intersection(lst)
             for item in overlap:
                 lst.remove(item)
@@ -1512,7 +1516,7 @@ def _run_rand(node_degree_count:list, node_index:list, degree_nodes:list, other:
         rand_node = _get_rand_uniform(node_degree_count, other)
     elif rand_type == 'degree':
         rand_node = _get_rand_degree(node_degree_count, degree_nodes)
-
+    
     rand_index = _get_index(rand_node, graph_node_index)
     if node_type == 'TO':
         results = _performance_run(node_index, rand_index, graph_node, ps, diffuse_matrix=diffuse_matrix)
@@ -1912,6 +1916,5 @@ def _write_sum_txt(result_fl: str, group1_name: str, group2_name: str, gp1_only_
             val = "\t".join(str(v) for v in gene)
             file_hand.writelines("%s\n" % val)
     file_hand.close()
-
 
 #endregion

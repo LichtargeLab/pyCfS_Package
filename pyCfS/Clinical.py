@@ -1030,15 +1030,15 @@ def mouse_phenotype_enrichment(query:list, omim_true_keyword:Any = '', custom_ba
                 savepath = _fix_savepath(savepath)
                 ndiff_save_path = os.path.join(savepath, f'MGI_Mouse_Phenotypes/Validation-{omim_true_keyword}')
                 os.makedirs(ndiff_save_path, exist_ok = True)
-            show_1_plot, show_1_z, show_2_plot, show_2_z = _mouse_ndiffusion(
-                query_phenotypes = query_phenotypes,
-                omim_id_phenotypes = true_phenotypes,
-                omim_true_keyword = omim_true_keyword,
-                set_1_name = f"Query Phenotypes ({len(query_phenotypes)})",
-                n_iter = 100,
-                cores = cores,
-                savepath = ndiff_save_path
-            )
+                show_1_plot, show_1_z, show_2_plot, show_2_z = _mouse_ndiffusion(
+                    query_phenotypes = query_phenotypes,
+                    omim_id_phenotypes = true_phenotypes,
+                    omim_true_keyword = omim_true_keyword,
+                    set_1_name = f"Query Phenotypes ({len(query_phenotypes)})",
+                    n_iter = 100,
+                    cores = cores,
+                    savepath = ndiff_save_path
+                )
         else:
             warnings.warn(f"No true phenotypes found for {omim_true_keyword}")
 
