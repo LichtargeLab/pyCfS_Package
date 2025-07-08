@@ -14,8 +14,8 @@ setuptools.setup(
     description = "Gene list validation experiments",
     long_description = open('DESCRIPTION.rst').read(),
     packages = setuptools.find_packages(),
+    python_requires='>=3.12',
     install_requires = [
-        'python>=3.12',
         'requests>=2.32.0',
         'pandas>=2.3.0',
         'numpy>=2.3.1',
