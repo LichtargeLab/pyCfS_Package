@@ -2,12 +2,15 @@
 Experiments focused on clinical data
 """
 
-import pkg_resources
+import os
+import ast
+
+from importlib.resources import files
 import pandas as pd
 import numpy as np
 from typing import Any
 from statsmodels.stats.multitest import multipletests
-from scipy.stats import norm, mannwhitneyu
+from scipy.stats import norm, mannwhitneyu, hypergeom
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 import requests
@@ -23,7 +26,7 @@ import math
 import warnings
 import multiprocessing
 from multiprocessing import Manager
-from scipy.stats import hypergeom
+
 from .utils import _fix_savepath, _load_open_targets_mapping, _get_avg_and_std_random_counts, _merge_random_counts, _define_background_list, _get_open_targets_gene_mapping, _write_sum_txt, _get_results, _check_overlap_dict,  _get_degree_node, _parse_gene_input, _get_index_dict, _get_diffusion_param
 
 #region Mouse Phenotype
@@ -36,7 +39,7 @@ def _load_mouse_phenotypes() -> (pd.DataFrame, list): # type: ignore
         mgi_df (pd.DataFrame): A dataframe of the mouse phenotype data.
         mgi_genes (list): A list of unique gene IDs.
     """
-    mgi_stream = pkg_resources.resource_stream(__name__, 'data/mousePhenotypes/part-00000-acbeac24-79db-4a95-8d79-0ae045cb6538-c000.snappy.parquet')
+    mgi_stream = files(__name__).joinpath('data/mousePhenotypes/part-00000-acbeac24-79db-4a95-8d79-0ae045cb6538-c000.snappy.parquet').open('rb')
     mgi_df = pd.read_parquet(mgi_stream, engine='pyarrow')
     # Get the mappings
     mapping_dict = _get_open_targets_gene_mapping()
@@ -415,7 +418,7 @@ def _mgi_strip_plot(df:pd.DataFrame, pheno_of_interest:list, sig_dot_color:str, 
     handles, labels = plt.gca().get_legend_handles_labels()
     order = [labels.index("FDR<0.05")] + [i for i in range(len(labels)) if i != labels.index("FDR<0.05")]
     legend = plt.legend([handles[idx] for idx in order], [labels[idx] for idx in order], loc='upper right', fontsize = 16)
-    for handle in legend.legendHandles:
+    for handle in legend.legend_handles:
         try: handle.set_sizes([100])
         except AttributeError:
             continue
@@ -568,10 +571,10 @@ def _load_clean_mgi_disease_phenotypes(omim_true_keyword:Any = '', verbose:int =
     Loads and cleans the MGI disease phenotypes.
     """
     # Load the MGI gene disease file
-    mgi_gene_disease_stream = pkg_resources.resource_stream(__name__, 'data/MGI_Geno_DiseaseDO_12.15.24.rpt')
+    mgi_gene_disease_stream = files(__name__).joinpath('data/MGI_Geno_DiseaseDO_12.15.24.rpt').open()
     mgi_gene_disease_df = pd.read_csv(mgi_gene_disease_stream, sep = '\t', header = None, names = ['allele', 'allele_symbol', 'allele_id', 'genetic_background', 'mammalian_phenotype_id', 'pubmed_id', 'mgi_marker_accession_id', 'do_id', 'mim_id'])
     # Load the MGI phenotype map file
-    mgi_phenotype_map_stream = pkg_resources.resource_stream(__name__, 'data/VOC_MammalianPhenotype_12.15.24.rpt')
+    mgi_phenotype_map_stream = files(__name__).joinpath('data/VOC_MammalianPhenotype_12.15.24.rpt').open()
     mgi_phenotype_map = pd.read_csv(mgi_phenotype_map_stream, sep = '\t', header = None, names = ['mammalian_phenotype_id', 'term', 'description'])
     all_phenotypes = mgi_phenotype_map['term'].unique().tolist()
     total_phenotypes = len(all_phenotypes)
@@ -747,7 +750,7 @@ def _get_mgi_graph(mgi_graph:nx.Graph) -> (list, np.array, dict, list): # type: 
 
 def _load_mgi_network():
     # LOad the graphml file
-    graph_stream = pkg_resources.resource_stream(__name__, 'data/mp_network_undirected_weight1_12.15.24.graphml')
+    graph_stream = files(__name__).joinpath('data/mp_network_undirected_weight1_12.15.24.graphml').open('rb')
     G = nx.read_graphml(graph_stream)
     # Get all nodes
     nodes = list(G.nodes())
@@ -1147,12 +1150,12 @@ def _get_family_files() -> (pd.DataFrame, list): # type: ignore
     # Load background data
     mapping_dict = _get_open_targets_gene_mapping()
     # Load protein family data
-    family_ref_stream = pkg_resources.resource_stream(__name__, 'data/targetsFileList.txt')
+    family_ref_stream = files(__name__).joinpath('data/targetsFileList.txt').open()
     family_ref_df = family_ref_stream.readlines()
-    family_ref_df = [x.decode('utf-8').strip() for x in family_ref_df]
+    family_ref_df = [x.strip() for x in family_ref_df]
     targets_df = pd.DataFrame()
     for f in family_ref_df:
-        target_df_stream = pkg_resources.resource_stream(__name__, 'data/targets/' + f)
+        target_df_stream = files(__name__).joinpath('data/targets/' + f).open('rb')
         df = pd.read_parquet(target_df_stream, engine='pyarrow')
         targets_df = pd.concat([targets_df, df], axis=0)
     # Get protein class data
@@ -1358,7 +1361,7 @@ def _protein_class_strip_plot(df:pd.DataFrame, q_cut:float, sig_dot_color:str, f
     # Fix legend
     #legend = plt.legend(loc='center left', bbox_to_anchor=(1.5, 0.6))
     legend = ax.legend(loc = 'upper right')
-    for handle in legend.legendHandles:
+    for handle in legend.legend_handles:
         try: handle.set_sizes([100])
         except AttributeError:
             continue
@@ -1458,7 +1461,7 @@ def _load_depmap() -> (pd.DataFrame, list): # type: ignore
         df (pd.DataFrame): The loaded DepMap data as a DataFrame.
         all_depmap (list): A list of all DepMap IDs.
     """
-    stream = pkg_resources.resource_stream(__name__, 'data/CRISPR_(DepMap_22Q2_Public+Score,_Chronos)_.feather')
+    stream = files(__name__).joinpath('data/CRISPR_(DepMap_22Q2_Public+Score,_Chronos)_.feather').open('rb')
     df = pd.read_feather(stream)
     all_depmap = df['depmap_id'].tolist()
     df.set_index('depmap_id', inplace = True)
@@ -1845,7 +1848,7 @@ def _load_open_targets_drugs() -> pd.DataFrame:
     Returns:
         pd.DataFrame: The Open Targets drugs data as a DataFrame.
     """
-    ot_drug_stream = pkg_resources.resource_stream(__name__, 'data/opentarget_drugtargets_08242023.parquet')
+    ot_drug_stream = files(__name__).joinpath('data/opentarget_drugtargets_08242023.parquet').open('rb')
     ot_drug_df = pd.read_parquet(ot_drug_stream, engine='pyarrow')
 
     columns_to_decode = ['linkedTargets.rows', 'linkedDiseases.rows', 'childChemblIds', 'crossReferences', 'synonyms', 'tradeNames']
@@ -1868,18 +1871,20 @@ def _get_open_targets_drugs(query:list, approved: bool, verbose:int = 0) -> pd.D
     # Load Open Targets files
     drug_targets = _load_open_targets_drugs()
     genes_to_ensembl = _load_open_targets_mapping()
-
     # Convert genes to Ensembl ID
     pd.options.mode.chained_assignment = None
     ensemble_ids = genes_to_ensembl[genes_to_ensembl['Gene name'].isin(query)]
     if verbose > 0:
         print(f"OpenTargets - {len(ensemble_ids['Gene name'].unique())}/{len(query)} genes found in Ensembl mapping.")
-
-    # Find drugs which target at least one gene
-    filtered_targets = drug_targets[drug_targets['linkedTargets.rows'].apply(lambda x: any(gene in ensemble_ids['Gene stable ID'].tolist() for gene in x))]
+    
+    # Convert to set for efficient intersection checking
+    query_gene_set = set(ensemble_ids['Gene stable ID'].tolist())
+    
+    # Convert string representations of lists to actual lists using ast.literal_eval
+    filtered_targets = drug_targets[drug_targets['linkedTargets.rows'].apply(lambda x: bool(set(ast.literal_eval(x)).intersection(query_gene_set)))]
 
     # Add columns for all target genes and overlapping target genes
-    filtered_targets['linkedTargets.genes'] = filtered_targets['linkedTargets.rows'].apply(lambda x: [genes_to_ensembl.loc[genes_to_ensembl['Gene stable ID'] == ensg, 'Gene name'].values[0] if ensg in genes_to_ensembl['Gene stable ID'].tolist() else ensg for ensg in x])
+    filtered_targets['linkedTargets.genes'] = filtered_targets['linkedTargets.rows'].apply(lambda x: [genes_to_ensembl.loc[genes_to_ensembl['Gene stable ID'] == ensg, 'Gene name'].values[0] if ensg in genes_to_ensembl['Gene stable ID'].tolist() else ensg for ensg in ast.literal_eval(x)])
     overlapping_genes_list = []
     for genes_list in filtered_targets['linkedTargets.genes']:
         genes_set = set(genes_list)
@@ -1898,13 +1903,10 @@ def _get_open_targets_drugs(query:list, approved: bool, verbose:int = 0) -> pd.D
 
     # Filter dataframe
     filtered_targets = filtered_targets[filtered_targets['isApproved'] == approved]
-
     # Clean column names
     filtered_targets = filtered_targets.rename(columns = {'name':'drug'})
     filtered_targets = filtered_targets.set_index('overlapping_genes')
-
     pd.options.mode.chained_assignment = 'warn'
-
     return filtered_targets
 
 def drug_gene_interactions(query: list, drug_source:list = ['OpenTargets'], dgidb_min_citations:int = 1, approved:bool = True, savepath:Any = False, verbose: int = 0) -> dict:

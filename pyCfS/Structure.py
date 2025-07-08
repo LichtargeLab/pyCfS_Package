@@ -24,7 +24,8 @@ import re
 import urllib.request
 import numpy as np
 import time
-import statsmodels.api as sm
+#import statsmodels.api as sm
+from scipy.stats import fisher_exact, norm
 import warnings
 import pkg_resources
 import multiprocessing as mp
@@ -60,13 +61,25 @@ def _fishers_exact_test(case_vars: pd.DataFrame, cont_vars: pd.DataFrame, case_p
     obs_cont_count = len(cont_vars['sample'][cont_vars['zyg'] != 0].unique())
     exp_case_count = case_pop - obs_case_count
     exp_cont_count = cont_pop - obs_cont_count
-    contingency_table = [[obs_case_count, obs_cont_count], [exp_case_count, exp_cont_count]]
-    # Perform Fisher's exact test
-    oddsratio_data = sm.stats.Table2x2(contingency_table)
-    odds_ratio = oddsratio_data.oddsratio
-    lower_ci, upper_ci = oddsratio_data.oddsratio_confint()
-    pval = oddsratio_data.oddsratio_pvalue()
-    return odds_ratio, lower_ci, upper_ci, pval
+    contingency_table = np.array([[obs_case_count, obs_cont_count], [exp_case_count, exp_cont_count]])
+
+    odds_ratio, p_value = fisher_exact(contingency_table)
+    tp_, fp_, fn_, tn_ = contingency_table.ravel()
+    
+    # Handle edge cases with zero counts
+    if tp_ == 0 or fp_ == 0 or fn_ == 0 or tn_ == 0:
+        # Add 0.5 to all cells to avoid log(0) issues (continuity correction)
+        tp_ += 0.5
+        fp_ += 0.5
+        fn_ += 0.5
+        tn_ += 0.5
+    
+    log_or  = np.log((tp_ * tn_) / (fp_ * fn_))
+    se      = np.sqrt(1/tp_ + 1/fp_ + 1/fn_ + 1/tn_)        # Woolf SE
+    z       = norm.ppf(1 - 1.96/2)                         # 1.96 for 95 %
+    ci_low  = np.exp(log_or + z * se)
+    ci_high = np.exp(log_or - z * se)
+    return odds_ratio, ci_low, ci_high, p_value
 
 def _r_install_package(package_name:str) -> None:
     """
@@ -133,7 +146,7 @@ def _check_pdb_id(protein_id:str) -> str:
         protein_id = pdb_sub['prot_id'].values[0]
     return protein_id
 
-def _r_lollipop_plot2(case_vars: pd.DataFrame, cont_vars: pd.DataFrame, gene: str, plot_domain:bool, ac_scale:str, ea_color:str, domain_min_dist:int, verbose:int = 0) -> PILImage.Image:
+def _r_lollipop_plot2(case_vars: pd.DataFrame, cont_vars: pd.DataFrame, gene: str, plot_domain:bool, ac_scale:str, ea_color:str, domain_min_dist:int, plot_width:int, plot_height:int, verbose:int = 0) -> PILImage.Image:
     """
     Generate a lollipop plot using R's EvoTrace package.
 
@@ -144,6 +157,8 @@ def _r_lollipop_plot2(case_vars: pd.DataFrame, cont_vars: pd.DataFrame, gene: st
         ac_scale (str): Scale for the allele count axis. Must be one of 'linear' or 'log'.
         ea_color (str): Color scheme for the effect allele. Must be one of 'prismatic', 'gray_scale', 'EA_bin', or 'black'.
         domain_min_dist (int): Minimum distance between two domains.
+        plot_width (int): Width of the plot.
+        plot_height (int): Height of the plot.
 
     Returns:
         PIL.Image.Image: The generated lollipop plot as a PIL Image object.
@@ -194,7 +209,7 @@ def _r_lollipop_plot2(case_vars: pd.DataFrame, cont_vars: pd.DataFrame, gene: st
         warnings.warn(f"No ENSP IDs match")
         return PILImage.new('RGB', (1, 1))
     # Save the plot
-    r(f"""ggsave("{plot_path}", plot, device = "png", width = 10, height = 5, dpi = 300)""")
+    r(f"""ggsave("{plot_path}", plot, device = "png", width = {plot_width}, height = {plot_height}, dpi = 300)""")
     # Display the plot
     lollipop_plot_plot = Image(filename=plot_path)
     os.unlink(plot_path)
@@ -203,7 +218,7 @@ def _r_lollipop_plot2(case_vars: pd.DataFrame, cont_vars: pd.DataFrame, gene: st
     lollipop_plot_plot = PILImage.open(image_buffer)
     return lollipop_plot_plot
 
-def _r_lollipop_plot1(input_vars: pd.DataFrame, gene:str, plot_domain:bool, ac_scale:str, ea_color:str, domain_min_dist:int, verbose:int = 0) -> PILImage.Image:
+def _r_lollipop_plot1(input_vars: pd.DataFrame, gene:str, plot_domain:bool, ac_scale:str, ea_color:str, domain_min_dist:int, plot_width:int, plot_height:int, verbose:int = 0) -> PILImage.Image:
     """
     Generate a lollipop plot using the EvoTrace package.
 
@@ -213,6 +228,8 @@ def _r_lollipop_plot1(input_vars: pd.DataFrame, gene:str, plot_domain:bool, ac_s
         ac_scale (str): The scale for the AC (Allele Count) axis. Must be one of 'linear' or 'log'.
         ea_color (str): The color scheme for the EA (Effect Allele) axis. Must be one of 'prismatic', 'gray_scale', 'EA_bin', or 'black'.
         domain_min_dist (int): The minimum distance between two domains.
+        plot_width (int): Width of the plot.
+        plot_height (int): Height of the plot.
 
     Returns:
         PILImage.Image: The generated lollipop plot as a PIL Image object.
@@ -264,7 +281,7 @@ def _r_lollipop_plot1(input_vars: pd.DataFrame, gene:str, plot_domain:bool, ac_s
         warnings.warn(f"No ENSP IDs match")
         return PILImage.new('RGB', (1, 1))
     # Save the plot
-    r(f"""ggsave("{plot_path}", plot, device = "png", width = 10, height = 5, dpi = 300)""")
+    r(f"""ggsave("{plot_path}", plot, device = "png", width = {plot_width}, height = {plot_height}, dpi = 300)""")
     # Display the plot
     lollipop_plot_plot = Image(filename=plot_path)
     os.unlink(plot_path)
@@ -273,7 +290,7 @@ def _r_lollipop_plot1(input_vars: pd.DataFrame, gene:str, plot_domain:bool, ac_s
     lollipop_plot_plot = PILImage.open(image_buffer)
     return lollipop_plot_plot
 
-def lollipop_plot(variants: pd.DataFrame, gene: str, group:str = 'both', case_pop:int=0, cont_pop:int=0, max_af:float = 1.0, min_af:float = 0.0, ea_lower:float = 0.0, ea_upper:float = 100.0, consequence: str = 'missense_variant|frameshift_variant|stop_gained|stop_lost|start_lost', show_domains:bool = True, ac_scale:str = 'linear', ea_color:str = 'prismatic', domain_min_dist:int = 20, savepath:str = False, verbose: int = 0) -> (Image, float, float, float, float): # type: ignore
+def lollipop_plot(variants: pd.DataFrame, gene: str, group:str = 'both', case_pop:int=0, cont_pop:int=0, max_af:float = 1.0, min_af:float = 0.0, ea_lower:float = 0.0, ea_upper:float = 100.0, consequence: str = 'missense_variant|frameshift_variant|stop_gained|stop_lost|start_lost', show_domains:bool = True, ac_scale:str = 'linear', ea_color:str = 'prismatic', domain_min_dist:int = 20, plot_width:int = 10, plot_height:int = 5, savepath:str = False, verbose: int = 0) -> (Image, float, float, float, float): # type: ignore
     """
     Generate a lollipop plot for a given gene based on variant data.
 
@@ -323,18 +340,25 @@ def lollipop_plot(variants: pd.DataFrame, gene: str, group:str = 'both', case_po
         # Clean variant annotations
         case_vars_collapsed, cont_vars_collapsed = _clean_variant_formats(case_vars), _clean_variant_formats(cont_vars)
 
+    case_vars_collapsed['EA'] = case_vars_collapsed['EA'].replace(100, 100-0.001)
+    cont_vars_collapsed['EA'] = cont_vars_collapsed['EA'].replace(100, 100-0.001)
+    print(f"Number of variants in case group: {len(case_vars_collapsed)}")
+    print(f"Number of variants in control group: {len(cont_vars_collapsed)}")
+    print(f"Max EA in cases: {case_vars_collapsed['EA'].max()} -- {case_vars_collapsed['EA'].min()}")
+    print(f"Max EA in controls: {cont_vars_collapsed['EA'].max()} -- {cont_vars_collapsed['EA'].min()}")
+
     # Run lollipop_plot2 for both groups
     if group == 'both':
         # Calculate fisher's exact test
         odds_ratio, lower_ci, upper_ci, pval = _fishers_exact_test(case_vars, cont_vars, case_pop, cont_pop)
         # Create the lollipop plot
-        plot = _r_lollipop_plot2(case_vars_collapsed, cont_vars_collapsed, gene, plot_domain = show_domains, ac_scale = ac_scale, ea_color = ea_color, domain_min_dist = domain_min_dist, verbose = verbose)
+        plot = _r_lollipop_plot2(case_vars_collapsed, cont_vars_collapsed, gene, plot_domain = show_domains, ac_scale = ac_scale, ea_color = ea_color, domain_min_dist = domain_min_dist, plot_width = plot_width, plot_height = plot_height, verbose = verbose)
 
     # Run lollipop_plot1 for single group
     elif group == 'case' or group == 'control':
         input_vars = case_vars_collapsed if group == 'case' else cont_vars_collapsed
         # Create lollipop plot
-        plot = _r_lollipop_plot1(input_vars, gene, plot_domain = show_domains, ac_scale = ac_scale, ea_color = ea_color, domain_min_dist = domain_min_dist, verbose = verbose)
+        plot = _r_lollipop_plot1(input_vars, gene, plot_domain = show_domains, ac_scale = ac_scale, ea_color = ea_color, domain_min_dist = domain_min_dist, plot_width = plot_width, plot_height = plot_height, verbose = verbose)
         pval, odds_ratio, lower_ci, upper_ci = None, None, None, None
 
     # Save data
@@ -355,7 +379,7 @@ def lollipop_plot(variants: pd.DataFrame, gene: str, group:str = 'both', case_po
 
 
 #region Protein Structure Visualization
-def _r_alphafold_structure(case_vars: pd.DataFrame, cont_vars: str, savepath: str) -> None:
+def _r_alphafold_structure(case_vars: pd.DataFrame, cont_vars: str, savepath: str, structure:str, pdb_path:str) -> None:
     """
     Calls the AlphaFold structure prediction method using R and saves the output in a specified path.
 
@@ -363,6 +387,8 @@ def _r_alphafold_structure(case_vars: pd.DataFrame, cont_vars: str, savepath: st
         case_vars (pd.DataFrame): A DataFrame containing case variables.
         cont_vars (str): A string representing control variables.
         savepath (str): The path where the output will be saved.
+        structure (str): The structure to visualize. Must be one of 'AlphaFold', 'PDB', or 'None'.
+        pdb_path (str): The path to the PDB file.
 
     Returns:
         None
@@ -375,39 +401,86 @@ def _r_alphafold_structure(case_vars: pd.DataFrame, cont_vars: str, savepath: st
     _r_install_package('EvoTrace')
     _r_install_package('curl')
     evotrace = importr('EvoTrace')
-    if case_vars.empty:
-        with localconverter(robjects.default_converter + pandas2ri.converter):
-            r_cont_vars = robjects.conversion.py2rpy(cont_vars)
-        prot_id = cont_vars.loc[0, 'ENSP']
-        # Call the structure
-        evotrace.Color_Variants_AlphaFold(
-            variants_ctrl=r_cont_vars,
-            prot_id=prot_id,
-            pml_output=savepath
-        )
-    if cont_vars.empty:
-        with localconverter(robjects.default_converter + pandas2ri.converter):
-            r_case_vars = robjects.conversion.py2rpy(case_vars)
-        prot_id = case_vars.loc[0, 'ENSP']
-        # Call the structure
-        evotrace.Color_Variants_AlphaFold(
-            variants_case=r_case_vars,
-            prot_id=prot_id,
-            pml_output=savepath
-        )
+    if structure == 'AlphaFold':
+        if case_vars.empty:
+            with localconverter(robjects.default_converter + pandas2ri.converter):
+                r_cont_vars = robjects.conversion.py2rpy(cont_vars)
+            prot_id = cont_vars.loc[0, 'ENSP']
+            # Call the structure
+            evotrace.Color_Variants_AlphaFold(
+                variants_ctrl=r_cont_vars,
+                prot_id=prot_id,
+                pml_output=savepath
+            )
+        if cont_vars.empty:
+            with localconverter(robjects.default_converter + pandas2ri.converter):
+                r_case_vars = robjects.conversion.py2rpy(case_vars)
+            prot_id = case_vars.loc[0, 'ENSP']
+            # Call the structure
+            evotrace.Color_Variants_AlphaFold(
+                variants_case=r_case_vars,
+                prot_id=prot_id,
+                pml_output=savepath
+            )
+        else:
+            # Convert local DataFrames to R DataFrames
+            with localconverter(robjects.default_converter + pandas2ri.converter):
+                r_case_vars = robjects.conversion.py2rpy(case_vars)
+                r_cont_vars = robjects.conversion.py2rpy(cont_vars)
+            prot_id = case_vars.loc[0, 'ENSP']
+            # Call the structure
+            evotrace.Color_Variants_AlphaFold(
+                variants_case=r_case_vars,
+                variants_ctrl=r_cont_vars,
+                prot_id=prot_id,
+                pml_output=savepath
+            )
+    elif structure == 'PDB':
+        if case_vars.empty:
+            with localconverter(robjects.default_converter + pandas2ri.converter):
+                r_cont_vars = robjects.conversion.py2rpy(cont_vars)
+            prot_id = cont_vars.loc[0, 'ENSP']
+            # Call the structure
+            evotrace.ColorPDBByET(
+                pdb_file = pdb_path,
+                chain = 'A',
+                ET_format = 'ENSP',
+                ET_file = prot_id,
+                color_type = 'ET',
+                output_format = 'pml',
+                output_file = savepath
+            )
+        if cont_vars.empty:
+            with localconverter(robjects.default_converter + pandas2ri.converter):
+                r_case_vars = robjects.conversion.py2rpy(case_vars)
+            prot_id = case_vars.loc[0, 'ENSP']
+            # Call the structure
+            evotrace.ColorPDBByET(
+                pdb_file = pdb_path,
+                chain = 'A',
+                ET_format = 'ENSP',
+                ET_file = prot_id,
+                color_type = 'ET',
+                output_format = 'pml',
+                output_file = savepath
+            )
+        else:
+            with localconverter(robjects.default_converter + pandas2ri.converter):
+                r_case_vars = robjects.conversion.py2rpy(case_vars)
+                r_cont_vars = robjects.conversion.py2rpy(cont_vars)
+            prot_id = case_vars.loc[0, 'ENSP']
+            # Call the structure
+            evotrace.ColorPDBByET(
+                pdb_file = pdb_path,
+                chain = 'A',
+                ET_format = 'ENSP',
+                ET_file = prot_id,
+                color_type = 'ET',
+                output_format = 'pml',
+                output_file = savepath
+            )
     else:
-        # Convert local DataFrames to R DataFrames
-        with localconverter(robjects.default_converter + pandas2ri.converter):
-            r_case_vars = robjects.conversion.py2rpy(case_vars)
-            r_cont_vars = robjects.conversion.py2rpy(cont_vars)
-        prot_id = case_vars.loc[0, 'ENSP']
-        # Call the structure
-        evotrace.Color_Variants_AlphaFold(
-            variants_case=r_case_vars,
-            variants_ctrl=r_cont_vars,
-            prot_id=prot_id,
-            pml_output=savepath
-        )
+        raise ValueError("Structure must be one of 'AlphaFold', 'PDB', or 'None'")
 
 def _prepare_resi_df(variants: pd.DataFrame) -> pd.DataFrame:
     """
@@ -699,7 +772,7 @@ def _plot_scw_z(output_df:pd.DataFrame, scw_plddt_cutoff: int) -> PILImage.Image
     plt.close()
     return image
 
-def protein_structures(variants: pd.DataFrame, gene: str, run_scw:bool = True, max_af:float = 1.0, min_af:float = 0.0, ea_lower:int = 0, ea_upper:int = 100, consequence: str = 'missense_variant|frameshift_variant|stop_gained|stop_lost|start_lost', scw_chain:str = 'A', scw_plddt_cutoff: int = 50, scw_min_dist_cutoff:int = 4, scw_max_dist_cutoff:int = 12, cores:int = 1, savepath: str=False) -> (pd.DataFrame, pd.DataFrame, pd.DataFrame, PILImage, PILImage, PILImage): # type: ignore
+def protein_structures(variants: pd.DataFrame, gene: str, structure:str = 'AlphaFold', pdb_path:str = "./", run_scw:bool = True, max_af:float = 1.0, min_af:float = 0.0, ea_lower:int = 0, ea_upper:int = 100, consequence: str = 'missense_variant|frameshift_variant|stop_gained|stop_lost|start_lost', scw_chain:str = 'A', scw_plddt_cutoff: int = 50, scw_min_dist_cutoff:int = 4, scw_max_dist_cutoff:int = 12, cores:int = 1, savepath: str=False) -> (pd.DataFrame, pd.DataFrame, pd.DataFrame, PILImage, PILImage, PILImage): # type: ignore
     """
     Generate AlphaFold protein structures for the given variants and save them to a specified path.
 
@@ -806,7 +879,7 @@ def protein_structures(variants: pd.DataFrame, gene: str, run_scw:bool = True, m
         # Call the protein visualization
         new_savefile = os.path.join(new_savepath, f'{gene}_AF{min_af}-{max_af}_EA{ea_lower}-{ea_upper}_AlphaFold.pml')
         # Call the protein visualizations
-        _r_alphafold_structure(case_vars_collapsed, cont_vars_collapsed, new_savefile)
+        _r_alphafold_structure(case_vars_collapsed, cont_vars_collapsed, new_savefile, structure, pdb_path)
         # Write case residues to output file
         if not case_vars_residues.empty:
             with open(os.path.join(new_savepath, f'Cases_{gene}_AF{min_af}-{max_af}_EA{ea_lower}-{ea_upper}_residues.txt'), 'a') as f:

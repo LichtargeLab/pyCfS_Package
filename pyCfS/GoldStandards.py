@@ -4,39 +4,34 @@ Collection of functions looking at previous genetic overlap recovery
 Functions:
 
 """
-
-import pkg_resources
 import io
 import os
-from tqdm import tqdm
 import concurrent.futures
-import pandas as pd
-import requests
-import time
+from itertools import repeat
 from multiprocessing import Pool
-from collections import Counter
 from typing import Any
-import random
+import time
+import warnings
 from urllib.error import HTTPError, URLError
 from http.client import IncompleteRead
+import json
+
+from tqdm import tqdm
+import pandas as pd
+import requests
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib_venn import venn2
+#from matplotlib_venn.layout.venn2 import DefaultLayoutAlgorithm
 from matplotlib.colors import Normalize
 from matplotlib.cm import ScalarMappable
 from Bio import Entrez
 import seaborn as sns
 from PIL import Image
 from venn import venn
-from scipy.stats import norm, fisher_exact, ks_2samp
-from scipy.sparse import lil_matrix, csr_matrix, coo_matrix, csgraph, identity
-from scipy.sparse.linalg import lgmres
-import warnings
+from scipy.stats import norm, fisher_exact
 from sklearn.exceptions import UndefinedMetricWarning
-from sklearn.metrics import roc_curve, precision_recall_curve, auc
 import networkx as nx
-import concurrent.futures
-from itertools import repeat
 from .utils import _hypergeo_overlap, _fix_savepath, _define_background_list, _clean_genelists, _load_grch38_background,_load_clean_string_network, _get_edge_weight, _write_sum_txt, _get_results, _check_overlap_dict, _get_degree_node, _parse_gene_input, _get_index_dict, _get_diffusion_param, _parse_true_go_terms, _hypergeometric_overlap, _test_overlap_with_random, _go_term_ndiffusion
 
 warnings.filterwarnings("ignore", category=UndefinedMetricWarning)
@@ -94,7 +89,7 @@ def _query_target_disease_associations(efo_id: str) -> pd.DataFrame:
             disease(efoId: "{efo_id}") {{
                 id
                 name
-                associatedTargets(page: {{ index: 0, size: 10000 }}) {{
+                associatedTargets(page: {{ index: 0, size: 3000 }}) {{
                     count
                     rows {{
                         target {{
@@ -115,16 +110,28 @@ def _query_target_disease_associations(efo_id: str) -> pd.DataFrame:
             }}
         }}
     '''
-    response = requests.post(base_url, json={'query': query})
+    response = requests.post(base_url, json={'query': query}, timeout = 60)
+    
     if response.status_code != 200:
+        print(f"First attempt failed with status {response.status_code}, waiting and retrying...")
         # Wait for 1 minute and retry
         time.sleep(60)
-        response = requests.post(base_url, json={'query': query})
+        response = requests.post(base_url, json={'query': query}, timeout = 60)
+        print(f"Retry response status: {response.status_code}")
         if response.status_code != 200:
+            print(f"Error response text: {response.text}")
             raise ValueError("Error: " + response.text)
     
     data = response.json()
-    disease = data['data']['disease']['name']
+    
+    if 'errors' in data:
+        print(f"API returned errors: {data['errors']}")
+        return None, None
+    
+    try:
+        disease = data['data']['disease']['name']
+    except (KeyError, TypeError) as e:
+        return None, None
     data_parsed = data['data']['disease']['associatedTargets']
     target_data = data_parsed['rows']
 
@@ -235,8 +242,8 @@ def _plot_association_scores(df: pd.DataFrame, bins:list = [0, 0.2, 0.4, 0.6, 0.
     # Reverse the legend order
     handles, labels = ax.get_legend_handles_labels()
     ax.legend(
-        reversed(handles),
-        reversed(labels),
+        list(reversed(handles)),
+        list(reversed(labels)),
         title="Genetic Association Score",
         bbox_to_anchor=(1.04, 0.5),
         loc="center left",
@@ -257,142 +264,297 @@ def _plot_association_scores(df: pd.DataFrame, bins:list = [0, 0.2, 0.4, 0.6, 0.
     plt.close()
     return image
 
-def _check_coding_variants(df: pd.DataFrame, efo_id: str) -> list:
+def _process_single_study(study_info):
     """
-        Check for coding variant associations for a given disease using the Open Targets API.
-        Parameters:
-        df (pd.DataFrame): DataFrame containing gene IDs in a column named 'target_id'.
-        efo_id (str): EFO ID of the disease to query.
-        Returns:
-        pd.DataFrame: DataFrame containing the evidence of coding variant associations with the following columns:
-            - target_id: ID of the target gene.
-            - approved_symbol: Approved symbol of the target gene.
-            - disease_id: ID of the disease.
-            - disease_name: Name of the disease.
-            - datasource_id: ID of the data source.
-            - odds_ratio: Odds ratio of the variant.
-            - odds_ratio_ci_lower: Lower confidence interval of the odds ratio.
-            - odds_ratio_ci_upper: Upper confidence interval of the odds ratio.
-            - variant_effect: Effect of the variant.
-            - beta: Beta value of the variant.
-            - beta_ci_lower: Lower confidence interval of the beta value.
-            - beta_ci_upper: Upper confidence interval of the beta value.
-            - variant_id: ID of the variant.
-            - variant_rs_id: RS ID of the variant.
-            - direction_on_trait: Direction of the variant's effect on the trait.
-            - variant_func_consequence_label: Functional consequence label of the variant.
-            - literature: Literature references associated with the variant.
-        Raises:
-        ValueError: If the API request fails.
+    Process a single GWAS study to find coding variant evidence.
+    
+    Args:
+        study_info (tuple): (study, base_url) tuple
+    
+    Returns:
+        list: List of [target_symbol, pubmed_id] pairs for coding variants found
     """
-    # Get gene IDs
-    gene_ids = df['target_id'].tolist()  # List of gene IDs
-    gene_ids = [f'"{gene_id}"' for gene_id in gene_ids]  # Wrap gene IDs in quotes
-
-    # Query Open Targets API to check for coding variant associations
-    base_url = _def_opentargets_base_url()
-    query = f'''
-        query targetDiseaseCodingVariantEvidence {{
-            disease(efoId: "{efo_id}") {{
-                id
-                name
-                evidences(ensemblIds: [{",".join(gene_ids)}], datasourceIds: ["ot_genetics_portal", "gene_burden"], size: 10000) {{
-                    rows {{
-                        target {{
-                            id
-                            approvedSymbol
+    study, base_url = study_info
+    study_id = study['id']
+    pubmed_id = study.get('pubmedId')
+    coding_variant_literature = []
+    
+    if not pubmed_id:
+        return coding_variant_literature
+    
+    # Query credible sets for this study
+    study_credible_sets_query = f'''
+        query StudyCredibleSets {{
+            studies(studyId: "{study_id}") {{
+                count
+                rows {{
+                    id
+                    studyType
+                    traitFromSource
+                    pubmedId
+                    credibleSets(page: {{index: 0, size: 500}}) {{
+                        count
+                        rows {{
+                            studyLocusId
+                            pValueMantissa
+                            pValueExponent
+                            beta
+                            chromosome
+                            locusStart
+                            locusEnd
+                            finemappingMethod
                         }}
-                        disease {{
-                            id
-                            name
-                        }}
-                        datasourceId
-                        oddsRatioConfidenceIntervalLower
-                        oddsRatioConfidenceIntervalUpper
-                        oddsRatio
-                        beta
-                        betaConfidenceIntervalLower
-                        betaConfidenceIntervalUpper
-                        variantId
-                        variantRsId
-                        literature
-                        variantAminoacidDescriptions
-                        variantFunctionalConsequence {{
-                            label
-                        }}
-                        variantEffect
-                        directionOnTrait
                     }}
                 }}
             }}
         }}
     '''
-
-    response = requests.post(base_url, json={'query': query})
-    if response.status_code != 200:
-        # Wait for 1 minute and retry
-        time.sleep(60)
-        response = requests.post(base_url, json={'query': query})
-        if response.status_code != 200:
-            raise ValueError("Error: " + response.text)
-
-    data = response.json()
-    disease_name = data['data']['disease']['name']
-    evidences = data['data']['disease']['evidences']['rows']
-    # Parse each row in evidences
-    rows_list = []
-    for evidence in evidences:
-        # Basic information
-        target_id = evidence['target']['id']
-        approved_symbol = evidence['target']['approvedSymbol']
-        disease_id = evidence['disease']['id']
-        disease_name = evidence['disease']['name']
-        datasource_id = evidence['datasourceId']
-        odds_ratio = evidence.get('oddsRatio')
-        odds_ratio_ci_lower = evidence.get('oddsRatioConfidenceIntervalLower')
-        odds_ratio_ci_upper = evidence.get('oddsRatioConfidenceIntervalUpper')
-        beta = evidence.get('beta')
-        beta_ci_lower = evidence.get('betaConfidenceIntervalLower')
-        beta_ci_upper = evidence.get('betaConfidenceIntervalUpper')
-        variant_id = evidence.get('variantId')
-        variant_rs_id = evidence.get('variantRsId')
-        literature = evidence.get('literature')
-        if isinstance(literature, list):
-            literature = ":".join(literature)
-        variant_effect = evidence.get('variantEffect')
-        direction_on_trait = evidence.get('directionOnTrait')
-        
-        # Handle nested fields like variantFunctionalConsequence and variantFunctionalConsequenceFromQtlId
-        variant_func_consequence = evidence.get('variantFunctionalConsequence')
-        variant_func_consequence_label = variant_func_consequence.get('label') if variant_func_consequence else None
-        
-        # Collect data into a dictionary
-        row_data = {
-            'target_id': target_id,
-            'approved_symbol': approved_symbol,
-            'disease_id': disease_id,
-            'disease_name': disease_name,
-            'datasource_id': datasource_id,
-            'odds_ratio': odds_ratio,
-            'odds_ratio_ci_lower': odds_ratio_ci_lower,
-            'odds_ratio_ci_upper': odds_ratio_ci_upper,
-            'variant_effect': variant_effect,
-            'beta': beta,
-            'beta_ci_lower': beta_ci_lower,
-            'beta_ci_upper': beta_ci_upper,
-            'variant_id': variant_id,
-            'variant_rs_id': variant_rs_id,
-            'direction_on_trait': direction_on_trait,
-            'variant_func_consequence_label': variant_func_consequence_label,
-            'literature': literature,
-        }
-        rows_list.append(row_data)
     
-    # Create DataFrame from rows_list
-    evidence_df = pd.DataFrame(rows_list)
+    try:
+        cs_response = requests.post(base_url, json={'query': study_credible_sets_query}, timeout=30)
+        
+        if cs_response.status_code == 200:
+            cs_data = cs_response.json()
+            
+            if 'errors' not in cs_data and cs_data['data']['studies']['rows']:
+                studies_data = cs_data['data']['studies']['rows']
+                for study_data in studies_data:
+                    # These are the credible sets for the study.
+                    credible_sets = study_data.get('credibleSets', {}).get('rows', [])
+                    for cs in credible_sets:
+                        study_locus_id = cs.get('studyLocusId')
+                        if not study_locus_id:
+                            continue
+                        
+                        # Query locus data for this specific credible set
+                        locus_query = f'''
+                            query CredibleSetLocus {{
+                                credibleSet(studyLocusId: "{study_locus_id}") {{
+                                    studyLocusId
+                                    locus(page: {{index: 0, size: 100}}) {{
+                                        rows {{
+                                            posteriorProbability
+                                            variant {{
+                                                id
+                                                chromosome
+                                                position
+                                                transcriptConsequences {{
+                                                    target {{
+                                                        id
+                                                        approvedSymbol
+                                                    }}
+                                                    distanceFromFootprint
+                                                    variantConsequences {{
+                                                        id
+                                                        label
+                                                    }}
+                                                }}
+                                            }}
+                                        }}
+                                    }}
+                                }}
+                            }}
+                        '''
+                        
+                        try:
+                            locus_response = requests.post(base_url, json={'query': locus_query}, timeout=30)
+                            if locus_response.status_code == 200:
+                                locus_data_response = locus_response.json()
+                                
+                                if 'errors' not in locus_data_response and locus_data_response['data']['credibleSet']:
+                                    locus_data = locus_data_response['data']['credibleSet']['locus']['rows']
+                                    if locus_data:
+                                        # Sort by posterior probability (highest first) to get lead SNP
+                                        locus_data_sorted = sorted(locus_data, 
+                                                                 key=lambda x: x.get('posteriorProbability', 0), 
+                                                                 reverse=True)
+                                        
+                                        # Get the lead SNP (highest posterior probability)
+                                        lead_variant_data = locus_data_sorted[0]
+                                        lead_variant = lead_variant_data.get('variant', {})
+                                        
+                                        if lead_variant:
+                                            # Check transcript consequences for the lead SNP only
+                                            transcript_consequences = lead_variant.get('transcriptConsequences', [])
+                                            # Loop through transcript consequences of lead SNP
+                                            for tc in transcript_consequences:
+                                                target = tc.get('target', {})
+                                                distance_from_footprint = tc.get('distanceFromFootprint', None)
+                                                # Test if the variant is directly within the gene (distance = 0) and has coding evidence
+                                                if target and distance_from_footprint is not None and distance_from_footprint == 0:
+                                                    target_symbol = target.get('approvedSymbol', '')
+                                                    variant_consequences = tc.get('variantConsequences', [])
+
+                                                    # Check if the variant is a coding variant
+                                                    coding_consequences = ['missense_variant', 'inframe_deletion', 'inframe_insertion', 'frameshift_variant', 'stop_gained', 'stop_lost', 'start_lost']
+                                                
+                                                    for vc in variant_consequences:
+                                                        consequence_label = vc.get('label', '')
+                                                        if consequence_label in coding_consequences:
+                                                            coding_variant_literature.append([target_symbol, pubmed_id])
+                        except Exception as e:
+                            continue
+    except Exception as e:
+        pass
+    
+    return coding_variant_literature
+
+def _query_gwas_studies(efo_id: str, max_workers: int = 10) -> pd.DataFrame:
+    """
+        Query the Open Targets API for GWAS studies for a given disease.
+        Args:
+            efo_id (str): EFO ID of the disease to query.
+            max_workers (int): Maximum number of concurrent threads for parallel processing.
+        Returns:
+            pd.DataFrame: DataFrame containing the GWAS studies.
+    """
+    base_url = _def_opentargets_base_url()
+    
+    # Step 1: Get all GWAS studies for this disease
+    gwas_studies_query = f'''
+        query GWASStudiesQuery {{
+            studies(diseaseIds: ["{efo_id}"], page: {{index: 0, size: 500}}) {{
+                count
+                rows {{
+                    id
+                    studyType
+                    projectId
+                    traitFromSource
+                    publicationFirstAuthor
+                    publicationDate
+                    publicationJournal
+                    nSamples
+                    cohorts
+                    pubmedId
+                    ldPopulationStructure {{
+                        ldPopulation
+                        relativeSampleSize
+                    }}
+                }}
+            }}
+        }}
+    '''
+    
+    try:
+        response = requests.post(base_url, json={'query': gwas_studies_query}, timeout=60)
+        if response.status_code == 200:
+            data = response.json()
+            studies = data['data']['studies']['rows']
+            gwas_studies = [s for s in studies if s['studyType'] == 'gwas' and s.get('pubmedId')]
+            
+            # Prepare arguments for parallel processing
+            study_args = [(study, base_url) for study in gwas_studies]
+            
+            # Process studies in parallel using ThreadPoolExecutor
+            all_coding_variants = []
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # Submit all tasks
+                future_to_study = {executor.submit(_process_single_study, args): args[0] for args in study_args}
+                
+                # Collect results as they complete
+                for future in concurrent.futures.as_completed(future_to_study):
+                    try:
+                        result = future.result()
+                        all_coding_variants.extend(result)
+                    except Exception as exc:
+                        study = future_to_study[future]
+                        print(f"Study {study['id']} generated an exception: {exc}")
+            
+            # Convert to DataFrame
+            coding_variant_literature = pd.DataFrame(all_coding_variants, columns=['approved_symbol', 'pubmed_id'])
+            return coding_variant_literature
+            
+        else:
+            print(f"HTTP error: {response.status_code} - {response.text}")
+            return pd.DataFrame(columns=['approved_symbol', 'pubmed_id'])
+    except Exception as e:
+        print(f"Error getting GWAS studies: {e}")
+        return pd.DataFrame(columns=['approved_symbol', 'pubmed_id'])
+        
+def _check_coding_variants(df: pd.DataFrame, gwas_coding_variant_literature: pd.DataFrame, efo_id: str) -> list:
+    """
+        Check for coding variant associations for a given disease using the Open Targets API.
+        This version checks each gene individually for both gene_burden and coding variant evidence.
+        
+        Parameters:
+        df (pd.DataFrame): DataFrame containing gene IDs in a column named 'target_id'.
+        efo_id (str): EFO ID of the disease to query.
+        max_workers (int): Maximum number of concurrent threads for parallel processing.
+        Returns:
+        pd.DataFrame: DataFrame containing the evidence of coding variant associations.
+    """
+    
+    base_url = _def_opentargets_base_url()
+    all_evidences = []
+    
+    for _, row in df.iterrows():
+        target_id = row['target_id']
+        approved_symbol = row['approved_symbol']
+        
+        # Check for gene_burden evidence for this specific gene
+        gene_burden_literature = []
+        gene_burden_query = f'''
+            query geneBurdenEvidence {{
+                disease(efoId: "{efo_id}") {{
+                    evidences(ensemblIds: ["{target_id}"], datasourceIds: ["gene_burden"], size: 100) {{
+                        rows {{
+                            target {{
+                                id
+                                approvedSymbol
+                            }}
+                            datasourceId
+                            literature
+                        }}
+                    }}
+                }}
+            }}
+        '''
+        
+        try:
+            response = requests.post(base_url, json={'query': gene_burden_query}, timeout=60)
+            if response.status_code == 200:
+                data = response.json()
+                if data['data']['disease']['evidences']['rows']:
+                    for evidence in data['data']['disease']['evidences']['rows']:
+                        literature = evidence.get('literature', [])
+                        if isinstance(literature, list):
+                            gene_burden_literature.extend(literature)
+                        elif literature:
+                            gene_burden_literature.append(literature)
+        except Exception as e:
+            print(f"    Error checking gene_burden for {approved_symbol}: {e}")
+        
+        # Check for coding variant evidence for this specific gene
+        sub_gwas_studies = gwas_coding_variant_literature[gwas_coding_variant_literature['approved_symbol'] == approved_symbol]
+        if sub_gwas_studies.empty:
+            coding_variant_literature = []
+        else:
+            coding_variant_literature = sub_gwas_studies['pubmed_id'].tolist()
+        
+        # Remove duplicates and clean up literature
+        gene_burden_literature = list(set([str(x) for x in gene_burden_literature if x]))
+        coding_variant_literature = list(set([str(x) for x in coding_variant_literature if x]))
+        
+        # Create evidence entries
+        has_gene_burden = len(gene_burden_literature) > 0
+        has_coding_variants = len(coding_variant_literature) > 0
+        if has_gene_burden or has_coding_variants:
+            all_evidences.append({
+                'target_id': target_id,
+                'approved_symbol': approved_symbol,
+                'datasource_id': 'gene_burden',
+                'gene_burden_literature': ":".join(gene_burden_literature),
+                'gwas_coding_literature': ":".join(coding_variant_literature),
+                'has_gene_burden': has_gene_burden,
+                'has_coding_variants': has_coding_variants
+            })
+            evidence_df = pd.DataFrame(all_evidences)
+        else:
+            evidence_df = pd.DataFrame()
+    
     return evidence_df
 
-def _prioritize_goldstandards(df: pd.DataFrame, efo_id: str, min_goldstandards: int) -> (pd.DataFrame, list): # type: ignore
+def _prioritize_goldstandards(df: pd.DataFrame, efo_id: str, min_goldstandards: int, max_workers: int = 20) -> (pd.DataFrame, list): # type: ignore
     """
         Prioritize gold standard genes based on genetic association and global score.
 
@@ -415,6 +577,10 @@ def _prioritize_goldstandards(df: pd.DataFrame, efo_id: str, min_goldstandards: 
     coding_var_rows = []
     min_genetic_association = None
     min_global_score = None
+
+    gwas_coding_variant_literature = _query_gwas_studies(efo_id, max_workers)
+    gwas_coding_variant_literature.to_csv('/Users/Kevin/Library/CloudStorage/Dropbox/Kevin Only Documents/Baylor College of Medicine - Year 1/Rotation #1 - Olivier Lichtarge/UKBiobank_Analyses/Genomics CFS Scripts/pyCFS Package/pyCFS_project/python3.12_update_data/v3.12_results/gwas_coding_variant_literature.csv', index = False)
+
     # Loop through data to find coding variant evidence
     for genetic_association in ['[0.8, 1.0]', '[0.6, 0.8)', '[0.4, 0.6)', '[0.2, 0.4)', '[0.0, 0.2)']:
         for global_score in ['[0.8, 1.0]', '[0.6, 0.8)', '[0.4, 0.6)', '[0.2, 0.4)', '[0.0, 0.2)']:
@@ -430,19 +596,19 @@ def _prioritize_goldstandards(df: pd.DataFrame, efo_id: str, min_goldstandards: 
             # Loop through each gene to see if there is coding variant evidence
             for gene in sub_df['approved_symbol']:
                 gene_data = df[df['approved_symbol'] == gene]
-                data_evidences = _check_coding_variants(gene_data, efo_id)
+                data_evidences = _check_coding_variants(gene_data, gwas_coding_variant_literature, efo_id)
                 if data_evidences.empty:
                     continue
                 # Check for coding variant evidence
-                if "gene_burden" in data_evidences['datasource_id'].tolist() or data_evidences['variant_func_consequence_label'].str.contains('missense_variant|inframe_deletion|inframe_insertion|frameshift_variant', na = False).any():
+                if "gene_burden" in data_evidences['datasource_id'].tolist() or data_evidences['has_coding_variants'].any():
                     # Grab coding variant gene burden literature evidence
-                    gene_burden_literature = data_evidences[data_evidences['datasource_id'] == 'gene_burden']['literature'].unique().tolist()
+                    gene_burden_literature = data_evidences[data_evidences['datasource_id'] == 'gene_burden']['gene_burden_literature'].unique().tolist()
                     gene_burden_literature = [x for x in gene_burden_literature if x is not None]
                     gene_burden_literature = ":".join(gene_burden_literature) if len(gene_burden_literature) > 0 else None
-                    # Grab GWAS missense variant literature evidence
-                    missense_variant_literature = data_evidences[data_evidences['variant_func_consequence_label'].str.contains('missense_variant|inframe_deletion|inframe_insertion|frameshift_variant', na = False)]['literature'].unique().tolist()
-                    missense_variant_literature = [x for x in missense_variant_literature if x is not None]
-                    missense_variant_literature = ":".join(missense_variant_literature) if len(missense_variant_literature) > 0 else None
+                    # Grab GWAS coding variant literature evidence
+                    gwas_coding_literature = data_evidences[data_evidences['has_coding_variants'] == True]['gwas_coding_literature'].unique().tolist()
+                    gwas_coding_literature = [x for x in gwas_coding_literature if x is not None and x != '']
+                    gwas_coding_literature = ":".join(gwas_coding_literature) if len(gwas_coding_literature) > 0 else None
                     # Add the gene to the coding_var_genes list
                     coding_var_genes.append(gene)
                     # Create row for output df
@@ -451,7 +617,7 @@ def _prioritize_goldstandards(df: pd.DataFrame, efo_id: str, min_goldstandards: 
                         'genetic_association': gene_data['genetic_association'].values[0],
                         'overall_score': gene_data['overall_score'].values[0],
                         'gene_burden_literature': gene_burden_literature,
-                        'coding_variant_gwas_literature': missense_variant_literature,
+                        'missense_variant_literature': gwas_coding_literature,
                         'genetic_association_group': genetic_association,
                         'overall_score_group': global_score
                     })
@@ -2355,8 +2521,10 @@ def _entrez_search(gene:str, disease:str, custom_terms:str, email:str, api_key:s
     # Construct query
     if gene and disease:
         new_query = f'"{gene}" AND ("{disease}") AND (("gene") OR ("protein"))'
-    if gene and custom_terms:
+    elif gene and custom_terms:
         new_query = f'"{gene}" AND {custom_terms}'
+    else:
+        raise ValueError("Invalid combination of gene, disease, and custom_terms provided.")
     retries = 5
     for attempt in range(retries):
         try:

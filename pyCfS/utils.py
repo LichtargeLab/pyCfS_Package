@@ -2,27 +2,27 @@
 Utility functions for the scripts
 """
 
+import ast
+import io
+import random
+from multiprocessing import Pool
+import os
+
 from typing import Any
 from collections.abc import Iterable
-from scipy.stats import hypergeom
-import pkg_resources
+from collections import Counter
+from scipy.stats import hypergeom, ks_2samp
+from scipy.sparse import lil_matrix, csr_matrix, coo_matrix, csgraph, identity
+from scipy.sparse.linalg import lgmres
+from importlib.resources import files
 import pandas as pd
 import numpy as np
 import networkx as nx
-from scipy.sparse import lil_matrix, csr_matrix, coo_matrix, csgraph, identity
-from scipy.sparse.linalg import lgmres
-import ast
-from collections import Counter
-import random
 from sklearn.metrics import roc_curve, precision_recall_curve, auc
 import matplotlib.pyplot as plt
-import io
 from matplotlib_venn import venn2
 from PIL import Image
-from multiprocessing import Pool
-from scipy.stats import ks_2samp
 import seaborn as sns
-import os
 
 #region Statistical tests
 def _hypergeo_overlap(background_size: int, query_genes:int, gs_genes:int, overlap:int) -> float:
@@ -73,7 +73,7 @@ def _load_grch38_background(just_genes:bool = True) -> Any:
     -------
         list: List of genes annotated in GRCh38_v94
     """
-    stream = pkg_resources.resource_stream(__name__, 'data/ENSEMBL-lite_GRCh38.v94.txt')
+    stream = files(__name__).joinpath('data/ENSEMBL-lite_GRCh38.v94.txt').open()
     df = pd.read_csv(stream, sep = '\t')
     if just_genes:
         return df['gene'].tolist()
@@ -101,7 +101,7 @@ def _load_string(version:str) -> pd.DataFrame:
     """
     if version not in ['v10.0', 'v11.0', 'v11.5', 'v12.0']:
         raise ValueError("Version must be 'v10.0', 'v11.0', 'v11.5', or 'v12.0'")
-    stream = pkg_resources.resource_stream(__name__, f'data/9606.protein.links.detailed.{version}.feather')
+    stream = files(__name__).joinpath(f'data/9606.protein.links.detailed.{version}.feather').open('rb')
     df_1 = pd.read_feather(stream)
     df_1 = df_1.dropna()
     return df_1
@@ -113,7 +113,7 @@ def _load_open_targets_mapping() -> pd.DataFrame:
     Returns:
         pd.DataFrame: The mapping data with columns for ensgID and geneNames.
     """
-    mapping_stream = pkg_resources.resource_stream(__name__, 'data/biomart_ensgID_geneNames_08162023.txt')
+    mapping_stream = files(__name__).joinpath('data/biomart_ensgID_geneNames_08162023.txt').open()
     mapping_df = pd.read_csv(mapping_stream, sep='\t')
     return mapping_df
 
@@ -124,7 +124,7 @@ def _load_reactome() -> list:
     Returns:
         list: A DataFrame containing the Reactome pathways.
     """
-    reactomes_stream = pkg_resources.resource_stream(__name__, 'data/ReactomePathways_Mar2023.gmt')
+    reactomes_stream = files(__name__).joinpath('data/ReactomePathways_Mar2023.gmt').open('rb')
     reactomes = reactomes_stream.readlines()
     reactomes = [x.decode('utf-8').strip('\n') for x in reactomes]
     reactomes = [x.split('\t') for x in reactomes]
@@ -154,7 +154,7 @@ def _load_pdb_et_mapping() -> pd.DataFrame:
     Returns:
         pd.DataFrame: The mapping data with columns for PDB ID and ensgID.
     """
-    mapping_stream = pkg_resources.resource_stream(__name__, 'data/PDB-AF_id_map.csv')
+    mapping_stream = files(__name__).joinpath('data/PDB-AF_id_map.csv').open()
     mapping_df = pd.read_csv(mapping_stream, sep=',')
     return mapping_df
 #endregion
@@ -554,7 +554,7 @@ def _get_combined_score(net_df: pd.DataFrame) -> pd.DataFrame:
     for col in cols:
         net_df[col] = 1-((net_df[col]/1000) - p) / (1 -p)
         net_df[col] = np.where(net_df[col] > 1, 1, net_df[col])
-    net_df['score'] = 1 - np.product([net_df[i] for i in cols], axis=0)
+    net_df['score'] = 1 - np.prod([net_df[i] for i in cols], axis=0)
     net_df['score'] = net_df['score'] + p * (1 - net_df['score'])
     return net_df
 
@@ -634,8 +634,8 @@ def _get_go_terms(min_size: int, max_size: int) -> (dict, dict, dict): # type: i
     tuple: A tuple containing three dictionaries. The first dictionary contains GO terms for biological processes, the second dictionary contains GO terms for cellular components, and the third dictionary contains GO terms for molecular functions. Each dictionary maps a GO term name to a list of genes associated with that term.
     """
     #load go terms
-    #goterms_stream = pkg_resources.resource_stream(__name__, 'data/GO_terms_parsed_12012022.csv')
-    goterms_stream = pkg_resources.resource_stream(__name__, 'data/GO_terms_parsed_12.20.24.csv')
+    #goterms_stream = files(__name__).joinpath('data/GO_terms_parsed_12012022.csv').open()
+    goterms_stream = files(__name__).joinpath('data/GO_terms_parsed_12.20.24.csv').open()
     goterms = pd.read_csv(goterms_stream)
     goterms['gene_lst'] = goterms['gene_lst'].apply(lambda x: list(ast.literal_eval(x)))
     goterms['Goterm/Name'] = goterms['GOterm'] + '/' + goterms['Name']
@@ -819,11 +819,11 @@ def _test_overlap_with_random(query_phenotypes: list, true_phenotypes:list, tota
 def _load_go_network(go_type:str):
     # LOad the graphml file
     if go_type == 'go_bp':
-        graph_stream = pkg_resources.resource_stream(__name__, 'data/GO_biological_process_graph_12.19.24.graphml')
+        graph_stream = files(__name__).joinpath('data/GO_biological_process_graph_12.19.24.graphml').open('rb')
     elif go_type == 'go_cc':
-        graph_stream = pkg_resources.resource_stream(__name__, 'data/GO_cellular_component_graph_12.19.24.graphml')
+        graph_stream = files(__name__).joinpath('data/GO_cellular_component_graph_12.19.24.graphml').open('rb')
     elif go_type == 'go_mf':
-        graph_stream = pkg_resources.resource_stream(__name__, 'data/GO_molecular_function_graph_12.19.24.graphml')
+        graph_stream = files(__name__).joinpath('data/GO_molecular_function_graph_12.19.24.graphml').open('rb')
     G = nx.read_graphml(graph_stream)
     # Get all nodes
     nodes = list(G.nodes())
@@ -1268,7 +1268,7 @@ def _diffuse(label_vector:list, ps:csr_matrix) -> lil_matrix:
         lil_matrix_d = np.zeros(len(label_vector))
         return lil_matrix_d
     y = label_vector
-    f = lgmres(ps, y, tol=1e-10)[0]
+    f = lgmres(ps, y, rtol=1e-10)[0]
     return f
 
 def _performance_run(from_index:list, to_index:list, graph_node:list, ps:csr_matrix, exclude:list = [], diffuse_matrix:csr_matrix = False) -> dict:
