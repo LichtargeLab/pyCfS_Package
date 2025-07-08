@@ -1,5 +1,5 @@
 # pyCfS
-Version 0.1.7.3<br>
+Version 0.2<br>
 The aggregation of Lichtarge Lab genotype-phenotype validation experiments<br>
 
 ## Installation
@@ -12,9 +12,10 @@ Fedora/CentOS - `sudo yum install git-lfs`<br>
 Activate git-lfs - `git lfs install` <br>
 
 ### Create an anaconda environment and install non-pip packages
-conda create -n pyCfS python=3.8.18 <br>
+conda create -n pyCfS python=3.12 <br>
 conda activate pyCfS<br>
-conda install -c conda-forge r-base r-ggplot2 r-deldir r-rcppeigen r-interp rpy2 rasterio r-tzdb r-vroom r-readr r-cowplot r-tidyverse <br>
+conda install -c conda-forge r-base=4.3.3 r-ggplot2=3.5.2 r-deldir r-rcppeigen r-interp rpy2=3.5.11 rasterio r-tzdb r-vroom r-readr r-cowplot r-tidyverse <br>
+If this installation takes a while or fails, try setting the conda solver to libmamba <br>
 
 ### Install pyCfS (in anaconda environment)
 pip install git+https://github.com/LichtargeLab/pyCfS_Package.git <br>

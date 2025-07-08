@@ -9,9 +9,11 @@ import pkg_resources
 import io
 import os
 import pandas as pd
+import ast
 import numpy as np
 import warnings
 from .utils import _fix_savepath
+
 
 # Ignore SettingWithCopyWarning
 pd.options.mode.chained_assignment = None
@@ -153,9 +155,102 @@ def _load_results(result_path:str, result_experiments:list, valid_keys_and_types
                     model_weights = pd.read_csv(result_path + "RiskPrediction/" + file_1 + "/" + file_2 + "/feature_weights.csv", index_col = 0)
         return_dict['risk_prediction'] = model_weights
 
+    if 'ndiffusion' in result_experiments:
+        try:
+            receiver_rankings = pd.read_csv(result_path + "nDiffusion/Set_2Exclusive_vs_Set_1/dataframes/ranking.csv", index_col = 'Gene')
+            #receiver_rankings = pd.read_csv(result_path + "nDiffusion/Set_2Exclusive_vs_Set_1Exclusive/dataframes/ranking.csv", index_col = 'Gene')
+            # Filter for the query genes
+            col_interest = [x for x in receiver_rankings.columns if "Is the gene in" in x][0]
+            receiver_rankings = receiver_rankings[receiver_rankings[col_interest] == 1]
+            return_dict['ndiffusion'] = receiver_rankings
+        except:
+            try:
+                receiver_rankings = pd.read_csv(result_path + "nDiffusion/Set_2_vs_Set_1/dataframes/ranking.csv", index_col = 'Gene')
+                return_dict['ndiffusion'] = receiver_rankings
+            except:
+                warnings.warn("WARNING: No nDiffusion file found. Skipping...")
+
     if 'mouse_phenotype_enrichment' in result_experiments:
-        mgi_pheno = pd.read_csv(result_path + "MGI_Mouse_Phenotypes/MGI_Lower-Level_PhenoEnrichment.csv", index_col = 0)
-        return_dict['mouse_phenotype_enrichment'] = mgi_pheno
+        return_dict['mouse_phenotype_enrichment'] = {}
+        # Load the significant query phenotypes
+        query_mgi_pheno = pd.read_csv(result_path + "MGI_Mouse_Phenotypes/MGI_Lower-Level_PhenoEnrichment.csv", index_col = 0)
+        # Look for the query phenotype nDiffusion to get rankings
+        try:
+            mgi_dir = os.listdir(result_path + "MGI_Mouse_Phenotypes")
+            for file in mgi_dir:
+                if "Validation" in file:
+                    mgi_ndiff_dir = os.listdir(result_path + "MGI_Mouse_Phenotypes/" + file + "/nDiffusion_MGI")
+                    for file2 in mgi_ndiff_dir:
+                        # Use this for gold standard inclusive method
+                        if "Exclusive_vs_Query Phenotypes" in file2 and file2.count("Exclusive") == 1:
+                            receiver_rankings = pd.read_csv(result_path + "MGI_Mouse_Phenotypes/" + file + "/nDiffusion_MGI/" + file2 + "/dataframes/ranking.csv", index_col = 0)
+                            col_interest = [x for x in receiver_rankings.columns if "Query Phenotypes" in x][0]
+                            receiver_rankings = receiver_rankings[receiver_rankings[col_interest] == 1]
+                            
+        except:
+            warnings.warn("WARNING: No nDiffusion file found. Skipping...")
+        return_dict['mouse_phenotype_enrichment']['query_enrichment'] = query_mgi_pheno
+        return_dict['mouse_phenotype_enrichment']['receiver_rankings'] = receiver_rankings
+
+    if 'go_term_enrichment' in result_experiments:
+        return_dict['go_term_enrichment'] = None
+        query_go_terms = pd.read_csv(result_path + "STRING_Enrichment/STRING_Functional_Enrichment.csv", index_col = 1)
+        # Look for the query phenotype nDiffusion to get rankings
+        string_dir = os.listdir(result_path + 'STRING_Enrichment/')
+        for file in string_dir:
+            if "Validation" in file:
+                # Load the true GO terms
+                true_go_terms = pd.read_csv(result_path + 'STRING_Enrichment/Validation/go_bp_true_go_ids.csv', header = None, names = ['GO_Term'])
+                true_go_terms = true_go_terms['GO_Term'].tolist()
+
+                string_ndiff_dir = os.listdir(result_path + 'STRING_Enrichment/' + file + '/nDiffusion_GOterms_go_bp/')
+                # Get the receiver rankings
+                for file2 in string_ndiff_dir:
+                    # Use this for gold standard inclusive method
+                    if "go_bpExclusive_vs_Query GO Terms" in file2 and file2.count("Exclusive") == 1: ####
+                        receiver_rankings = pd.read_csv(result_path + "STRING_Enrichment/" + file + "/nDiffusion_GOterms_go_bp/" + file2 + "/dataframes/ranking.csv", index_col = 1)
+                        col_interest = [x for x in receiver_rankings.columns if "Query GO" in x][0]
+                        receiver_rankings = receiver_rankings[receiver_rankings[col_interest] == 1]
+        # Annotate true GO terms
+        query_go_terms['is true GO term'] = np.where(query_go_terms.index.isin(true_go_terms), 1, 0)
+        query_go_terms = query_go_terms[query_go_terms['category'] == 'Process']
+        true_go_terms_to_mask = query_go_terms[query_go_terms['is true GO term'] == 1]['description'].tolist()
+
+        # Transform the inputGenes column into a list of genes and annotate them
+        query_go_terms_t = query_go_terms.copy()
+        query_go_terms_t["GeneList"] = query_go_terms_t["inputGenes"].str.split(",")
+        query_go_terms_t = query_go_terms_t.explode("GeneList")
+        query_go_terms_t["GeneList"] = query_go_terms_t["GeneList"].str.strip()
+        query_go_terms_t = query_go_terms_t.set_index("GeneList")[["is true GO term", "description"]]
+        query_go_terms_t.columns = ["Flag_1_0", "PathwayDescription"]
+        query_go_terms_t = (
+            query_go_terms_t
+            .groupby(level=0)  # group by the 'GeneList' index
+            .agg({
+            'Flag_1_0': 'max',  # or 'first', 'any', etc. depending on how you want to combine 1/0
+            'PathwayDescription': lambda x: x.unique().tolist()
+            })
+        )
+        # Pull the true GO terms into their own column
+        query_go_terms_t['true_go_terms'] = query_go_terms_t['PathwayDescription'].apply(lambda x: [y for y in x if y in true_go_terms_to_mask])
+        # Remove the masked GO terms from the PathwayDescription column
+        query_go_terms_t['PathwayDescription'] = query_go_terms_t['PathwayDescription'].apply(lambda x: [y for y in x if y not in true_go_terms_to_mask])
+
+        # Transform the receiver rankings to gene-based
+        receiver_rankings = receiver_rankings.merge(query_go_terms[['inputGenes']], left_index = True, right_index = True)
+        receiver_rankings_t = receiver_rankings.copy()
+        receiver_rankings_t['inputGenes'] = receiver_rankings_t['inputGenes'].str.split(",")
+        receiver_rankings_t = receiver_rankings_t.explode("inputGenes")
+        receiver_rankings_t = receiver_rankings_t.set_index("inputGenes")[['Percentile_Rank', 'Diffusion score (Ranking)']]
+        receiver_rankings_t = receiver_rankings_t.groupby(level = 0).agg({'Percentile_Rank': 'max', 'Diffusion score (Ranking)': 'max'})
+
+        # Merge them together
+        merged = receiver_rankings_t.merge(query_go_terms_t, left_index = True, right_index = True, how = 'left')
+        # Renome the columns
+        merged = merged.rename(columns = {'Flag_1_0': 'GO Terms - True GO Term Overlap', 'PathwayDescription': 'GO Terms - Non-Overlapping GO Terms', 'Percentile_Rank': 'GO Terms - Diffusion Score (Percentile Ranking)', 'Diffusion score (Ranking)': 'GO Terms - Diffusion Score', 'true_go_terms': 'GO Terms - Overlapping True GO Terms'})
+        merged = merged[['GO Terms - True GO Term Overlap', 'GO Terms - Overlapping True GO Terms', 'GO Terms - Diffusion Score (Percentile Ranking)', 'GO Terms - Diffusion Score', 'GO Terms - Non-Overlapping GO Terms']]
+        # Sort by Diffusion score (Ranking)
+        return_dict['go_term_enrichment'] = merged
 
     if 'drug_gene_interactions' in result_experiments:
         if 'dgidb' in drug_source:
@@ -248,7 +343,7 @@ def _annotate_p_value(df:pd.DataFrame, p_value_df: pd.DataFrame, p_value_column:
     # Add score and clean
     out_df['InverseRanking'] = out_df['abs(Discovery Significance)'].rank(ascending = False, method = 'min').astype(int)
     if show_indiv_scores:
-        out_df['Score-Discovery Significance'] = out_df['InverseRanking'] / len(out_df)
+        out_df['Score-Discovery Significance'] = (out_df['InverseRanking'] / len(out_df))
     out_df['Score'] += out_df['InverseRanking'] / len(out_df)
     out_df = out_df.drop(columns = ['InverseRanking', 'abs(Discovery Significance)'])
     return out_df
@@ -586,7 +681,7 @@ def _validate_mgi_groups(mgi_groups: list) -> list:
             warnings.warn(f"Invalid MGI groups: {issues}. Valid MGI groups are: {valid_mgi_groups}")
         return good
 
-def _annotate_mgi(df: pd.DataFrame, mgi_df:pd.DataFrame, mgi_groups: list, score_method: str = 'rank', show_indiv_scores:bool = True) -> pd.DataFrame:
+def _annotate_mgi(df: pd.DataFrame, mgi_data:dict, mgi_groups: list, score_method: str = 'rank', show_indiv_scores:bool = True) -> pd.DataFrame:
     """
     Annotates a DataFrame with MGI (Mouse Genome Informatics) phenotype information and scores.
 
@@ -601,34 +696,98 @@ def _annotate_mgi(df: pd.DataFrame, mgi_df:pd.DataFrame, mgi_groups: list, score
     pd.DataFrame: The annotated DataFrame with MGI phenotype information and scores.
     """
     out_df = df.copy()
-    # Convert MGI dataframe to be gene indexed
-    mgi_groups = _validate_mgi_groups(mgi_groups)
-    mgi_df = mgi_df[
-        (mgi_df['UpperLevelLabel'].str.contains("|".join(mgi_groups), case = False, na = False)) &
-        (mgi_df['fdr'] <= 0.05)
-    ]
-    for idx, row in out_df.iterrows():
-        sub_mgi = mgi_df[mgi_df['geneMappings'].str.contains(idx, case = False, na = False)]
-        out_df.loc[idx, 'MGI-Count'] = len(sub_mgi)
-        if len(sub_mgi) == 0:
-            out_df.loc[idx, 'MGI-Phenotypes'] = np.nan
+    query_mgi_pheno = mgi_data['query_enrichment']
+    query_mgi_pheno = query_mgi_pheno[query_mgi_pheno['fdr'] <= 0.05]
+    receiver_rankings = mgi_data['receiver_rankings']
+    overlap_column = [x for x in query_mgi_pheno.columns if "pheno_overlap" in x][0]
+    # Loop through the genes and annotate with nDiffusion ranking and if recovered
+    hold_df = pd.DataFrame(index = out_df.index, columns = ['MGI-nDiffusionRank', 'MGI-True Phenotypes Count', 'MGI-True Phenotypes'])
+    for idx, vals in out_df.iterrows():
+        gene_phenotypes_values = []
+        gene_pheno_overlaps = []
+        gene_pheno_overlaps_count = 0
+        # Grab MGI phenotypes with the gene
+        gene_phenotypes = query_mgi_pheno[query_mgi_pheno['geneMappings'].str.contains(idx, case = False, na = False)]
+        gene_phenotypes_values = gene_phenotypes['modelPhenotypeLabel'].tolist()
+        # Look at overlapping phenotypes
+        gene_pheno_overlaps = gene_phenotypes['modelPhenotypeLabel'][gene_phenotypes[overlap_column] == 1].tolist()
+        gene_pheno_overlaps_count = len(gene_pheno_overlaps)
+        # grab max nDiffusion rank
+        if len(gene_phenotypes_values) > 0:
+            hold_nDiffusion_rank = receiver_rankings[receiver_rankings['Gene'].isin(gene_phenotypes_values)]
+            max_nDiffusion_rank = hold_nDiffusion_rank['Diffusion score (Ranking)'].max()
         else:
-            out_df.loc[idx, 'MGI-Phenotypes'] = ";".join(sub_mgi['modelPhenotypeLabel'].tolist())
+            max_nDiffusion_rank = 0
+        
+        hold_df.loc[idx,:] = [max_nDiffusion_rank, gene_pheno_overlaps_count, gene_pheno_overlaps]
+    hold_df = hold_df.sort_values(by = 'MGI-nDiffusionRank', ascending = False)
+    out_df = out_df.merge(hold_df, left_index = True, right_index = True, how = 'left')
+
+    # Score overlaps
+    out_df['Score-MGI-Overlap'] = out_df['MGI-True Phenotypes Count'].apply(lambda x: 1 if x > 0 else 0)
+    out_df['Score'] += out_df['Score-MGI-Overlap']
+    # Score diffusion
+    #out_df.loc[out_df['Score-MGI-Overlap'] == 1, 'MGI-nDiffusionRank'] = 0 #######
+    out_df['InverseRanking'] = out_df['MGI-nDiffusionRank'].rank(ascending = True, method = 'min').astype(int)
+    out_df.loc[out_df['MGI-nDiffusionRank'] == 0, 'InverseRanking'] = 0
+    out_df['Score-MGI-Diffusion'] = out_df['InverseRanking'] / len(out_df)
+    out_df['Score'] += out_df['Score-MGI-Diffusion']
+    # Remove the columns
+    if show_indiv_scores:
+        out_df = out_df.drop(columns = ['MGI-True Phenotypes Count', 'InverseRanking'])
+    else:
+        out_df = out_df.drop(columns = ['MGI-True Phenotypes Count', 'Score-MGI-Overlap', 'Score-MGI-Diffusion', 'InverseRanking'])
+
+    return out_df
+
+def _annotate_go_term_enrichment(df: pd.DataFrame, go_term_enrichment_df:pd.DataFrame, score_method:str = 'rank', show_indiv_scores:bool = True) -> pd.DataFrame:
+    out_df = df.copy()
+    out_df = out_df.merge(go_term_enrichment_df, left_index = True, right_index = True, how = 'left')
+    # Fill na with 0 across Flag_1_0, Percentile_Rank, and Diffusion score (Ranking)
+    out_df['GO Terms - True GO Term Overlap'] = out_df['GO Terms - True GO Term Overlap'].fillna(0)
+    out_df['GO Terms - Diffusion Score (Percentile Ranking)'] = out_df['GO Terms - Diffusion Score (Percentile Ranking)'].fillna(0)
+    out_df['GO Terms - Diffusion Score'] = out_df['GO Terms - Diffusion Score'].fillna(0)
+    
+    # Annotate the genes with GO Terms overlap
+    out_df['Score-GO Term Overlap'] = out_df['GO Terms - True GO Term Overlap'].apply(lambda x: 1 if x > 0 else 0)
+    out_df['Score'] += out_df['Score-GO Term Overlap']
+    # Annotate GO Term diffusion
+    #out_df.loc[out_df['Score-GO Term Overlap'] == 1, 'GO Terms - Diffusion Score (Percentile Ranking)'] = 0 #######
+
+    #out_df['InverseRanking'] = out_df['GO Terms - Diffusion Score (Percentile Ranking)'].rank(ascending = True, method = 'min').astype(int)
+    out_df['InverseRanking'] = out_df['GO Terms - Diffusion Score'].rank(ascending = True, method = 'min').astype(int)
+    #out_df.loc[out_df['GO Terms - Diffusion Score (Percentile Ranking)'] == 0, 'InverseRanking'] = 0
+    out_df.loc[out_df['GO Terms - Diffusion Score'] == 0, 'InverseRanking'] = 0
+    out_df['Score-GO Term Diffusion'] = out_df['InverseRanking'] / len(out_df)
+    out_df['Score'] += out_df['Score-GO Term Diffusion']
+    # Remove the columns
+    if show_indiv_scores:
+        #out_df = out_df.drop(columns = ['GO Terms - True GO Term Overlap', 'GO Terms - Diffusion Score'])
+        out_df = out_df.drop(columns = ['GO Terms - True GO Term Overlap', 'GO Terms - Diffusion Score (Percentile Ranking)'])
+    else:
+        out_df = out_df.drop(columns = ['GO Terms - True GO Term Overlap', 'GO Terms - Diffusion Score (Percentile Ranking)', 'GO Terms - Diffusion Score', 'Score-GO Term Diffusion'])
+    return out_df
+
+def _annotate_ndiffusion(df: pd.DataFrame, ndiffusion_df:pd.DataFrame, score_method:str = 'rank', show_indiv_scores:bool = True) -> pd.DataFrame:
+    out_df = df.copy()
+    out_df = out_df.merge(ndiffusion_df, left_index = True, right_index = True, how = 'left')
+    out_df['Diffusion score (Ranking)'] = out_df['Diffusion score (Ranking)'].fillna(0)
     # Score
     if score_method == 'binary':
-        out_df['Score-MGI'] = out_df['MGI-Phenotypes'].apply(lambda x: 1 if str(x) != 'nan' else 0)
-        out_df['Score'] += out_df['Score-MGI']
+        out_df['Score-nDiffusion'] = out_df['Diffusion score (Ranking)'].apply(lambda x: 1 if x > 0 else 0)
+        out_df['Score'] += out_df['Score-nDiffusion']
         if show_indiv_scores:
-            out_df = out_df.drop(columns = ['MGI-Count'])
+            out_df = out_df.drop(columns = ['Diffusion score (Ranking)'])
         else:
-            out_df = out_df.drop(columns = ['MGI-Count', 'Score-MGI'])
+            out_df = out_df.drop(columns = ['Diffusion score (Ranking)', 'Score-nDiffusion'])
     elif score_method == 'rank':
-        out_df['InverseRanking'] = out_df['MGI-Count'].rank(ascending = True, method = 'min').astype(int)
-        out_df.loc[out_df['MGI-Count'] == 0, 'InverseRanking'] = 0
-        if show_indiv_scores:
-            out_df['Score-MGI'] = out_df['InverseRanking'] / len(out_df)
-        out_df['Score'] += out_df['InverseRanking'] / len(out_df)
-        out_df = out_df.drop(columns = ['MGI-Count', 'InverseRanking'])
+        out_df['InverseRanking'] = out_df['Diffusion score (Ranking)'].rank(ascending = True, method = 'min').astype(int)
+        out_df.loc[out_df['Diffusion score (Ranking)'] == 0, 'InverseRanking'] = 0
+        out_df['Score-nDiffusion'] = out_df['InverseRanking'] / len(out_df)
+        out_df['Score'] += out_df['Score-nDiffusion']
+        #out_df = out_df.drop(columns = ['Unnamed: 0', 'Is the gene in Set_1Excl? (1=yes)', 'Percentile_Rank','InverseRanking'])
+        out_df = out_df.drop(columns = ['Unnamed: 0', 'Is the gene in Set_1? (1=yes)', 'Percentile_Rank','InverseRanking'])
+        out_df = out_df.rename(columns = {'Diffusion score (Ranking)': 'nDiffusion Signal Received'})
     else:
         raise ValueError("Invalid score method. Please choose 'binary' or 'rank'")
     return out_df
@@ -747,7 +906,7 @@ def prioritize_genes(query: list, result_dict:dict = {}, result_path:str = "", r
     pd.DataFrame: The annotated and ranked DataFrame.
     """
     # Define the valide arguments for inputs
-    valid_keys_and_types = {'p_value': pd.DataFrame, 'consensus': pd.DataFrame, 'goldstandard_overlap': list, 'gwas_catalog_colocalization': pd.DataFrame, 'interconnectivity': pd.DataFrame, 'functional_clustering': pd.DataFrame, 'functional_clustering_enrichment':dict, 'pubmed_comentions': pd.DataFrame, 'depmap_enrichment': pd.DataFrame, 'risk_prediction': pd.DataFrame, 'odds_ratios': pd.DataFrame, 'mouse_phenotype_enrichment': pd.DataFrame, 'drug_gene_interactions': pd.DataFrame}
+    valid_keys_and_types = {'p_value': pd.DataFrame, 'consensus': pd.DataFrame, 'goldstandard_overlap': list, 'gwas_catalog_colocalization': pd.DataFrame, 'ndiffusion': pd.DataFrame, 'interconnectivity': pd.DataFrame, 'functional_clustering': pd.DataFrame, 'functional_clustering_enrichment':dict, 'pubmed_comentions': pd.DataFrame, 'depmap_enrichment': pd.DataFrame, 'risk_prediction': pd.DataFrame, 'odds_ratios': pd.DataFrame, 'mouse_phenotype_enrichment': pd.DataFrame, 'drug_gene_interactions': pd.DataFrame, 'go_term_enrichment': pd.DataFrame}
 
     # Validate result_dict
     if result_dict != {}:
@@ -774,6 +933,12 @@ def prioritize_genes(query: list, result_dict:dict = {}, result_path:str = "", r
     # Annotate co-localization
     if 'gwas_catalog_colocalization' in result_experiments:
         main_df = _annotate_colocalization(main_df, result_dict['gwas_catalog_colocalization'], score_method = score_method, show_indiv_scores = show_indiv_scores)
+    # Annotate GO Term Enrichment
+    if 'go_term_enrichment' in result_experiments:
+        main_df = _annotate_go_term_enrichment(main_df, result_dict['go_term_enrichment'], score_method = score_method, show_indiv_scores = show_indiv_scores)
+    # Annotate nDiffusion
+    if 'ndiffusion' in result_experiments:
+        main_df = _annotate_ndiffusion(main_df, result_dict['ndiffusion'], score_method = score_method, show_indiv_scores = show_indiv_scores)
     # Annotate interactions
     if 'interconnectivity' in result_experiments:
         main_df = _annotate_interconnections(main_df, result_dict['interconnectivity'], result_dict['goldstandard_overlap'], score_method = score_method, show_indiv_scores = show_indiv_scores)

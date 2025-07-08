@@ -4,28 +4,30 @@ Functions:
 
 """
 
-import pkg_resources
-import pandas as pd
-import numpy as np
+import os
+import warnings
+import multiprocessing as mp
+import itertools
 from typing import Any
 from collections import defaultdict
+import uuid
+import time
+import io
+
+from importlib.resources import files
+import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
 import upsetplot as up
 from PIL import Image
-import io
-from matplotlib_venn import venn2
 import networkx as nx
-import uuid
-import ast
-import time
 import markov_clustering as mc
-import warnings
 from statsmodels.stats.multitest import multipletests
-import itertools
-import multiprocessing as mp
 from scipy.stats import hypergeom, percentileofscore
-import os
 from .utils import _fix_savepath, _get_edge_weight, _get_combined_score, _select_evidences, _get_evidence_types, _load_string, _load_reactome, _define_background_list, _go_term_ndiffusion, _hypergeometric_overlap, _test_overlap_with_random, _parse_true_go_terms, _get_go_terms
+
+# Ignore Future Warnings
+warnings.filterwarnings('ignore', category=FutureWarning)
 
 #region Consensus
 def _format_input_dict(list_names:list, gene_lists:list) -> dict:
@@ -63,15 +65,15 @@ def _format_input_dict(list_names:list, gene_lists:list) -> dict:
     """
     gene_dict = {}
     if list_names:
-        for j in range(len(list_names)):
+        for j, name in enumerate(list_names):
             seen = set()
             gene_list = [x for x in gene_lists[j] if not (x in seen or seen.add(x))]
-            gene_dict[list_names[j]] = [gene for gene in gene_list if gene and str(gene) != 'nan']
+            gene_dict[name] = [gene for gene in gene_list if gene and str(gene) != 'nan']
     else:
-        for j in range(len(gene_lists)):
-            if gene_lists[j]:
+        for j, gene_list in enumerate(gene_lists):
+            if gene_list:
                 seen = set()
-                gene_list = [x for x in gene_lists[j] if not (x in seen or seen.add(x))]
+                gene_list = [x for x in gene_list if not (x in seen or seen.add(x))]
                 gene_dict[f"list_{j}"] = [gene for gene in gene_list if gene and str(gene) != 'nan']
     return gene_dict
 
@@ -251,9 +253,9 @@ def _get_kegg_pathways(min_size:int, max_size:int) -> dict:
     Returns:
     dict: A dictionary of KEGG pathways with gene sets between min_size and max_size.
     """
-    kegg_stream = pkg_resources.resource_stream(__name__, 'data/KEGGpathways_20230620_Homo_sapiens.gmt')
+    kegg_stream = files(__name__).joinpath('data/KEGGpathways_20230620_Homo_sapiens.gmt').open()
     kegg = kegg_stream.readlines()
-    kegg = [x.decode('utf-8').strip('\n') for x in kegg]
+    kegg = [x.strip('\n') for x in kegg]
     kegg = [x.split('\t') for x in kegg]
     kegg_names = [x[0] for x in kegg]
     kegg_genes = [x[1].split(' ') for x in kegg]
@@ -276,9 +278,9 @@ def _get_wikipathways(min_size:int, max_size:int) -> dict:
     Returns:
     - wiki_dict (dict): dictionary of WikiPathways gene sets with sizes between min_size and max_size
     """
-    wiki_stream = pkg_resources.resource_stream(__name__, 'data/wikipathways_20230610_Homo_sapiens_genes.gmt')
+    wiki_stream = files(__name__).joinpath('data/wikipathways_20230610_Homo_sapiens_genes.gmt').open()
     wiki = wiki_stream.readlines()
-    wiki = [x.decode('utf-8').strip('\n') for x in wiki]
+    wiki = [x.strip('\n') for x in wiki]
     wiki = [x.split('\t') for x in wiki]
     # Subtract 1 b/c name of Wiki is included with genes
     wiki = [x for x in wiki if len(x) - 1 >= min_size]
@@ -322,14 +324,14 @@ def _clean_query(gene_list:list, source_names:Any) -> (dict, list): # type: igno
     Returns:
     dict: A dictionary where each key is a set name and each value is a gene from the input list.
     """
-    gene_list = [x for x in gene_list if x != False]
+    gene_list = [x for x in gene_list if x is not False]
     if source_names:
         sets = source_names
     else:
         sets = [f'set_{i+1}' for i in range(len(gene_list))]
     gene_dict = {}
-    for i in range(len(gene_list)):
-        gene_dict[sets[i]] = gene_list[i]
+    for i, gene in enumerate(gene_list):
+        gene_dict[sets[i]] = gene
     return gene_dict, sets
 
 def _get_gene_sources(set_dict: dict) -> (dict, list): # type: ignore
@@ -346,7 +348,7 @@ def _get_gene_sources(set_dict: dict) -> (dict, list): # type: ignore
         - A list of all proteins in the dictionary.
     """
     gene_source = {}
-    for k, v in set_dict.items():
+    for k, _ in set_dict.items():
         for protein in set_dict[k]:
             if protein in gene_source:
                 gene_source[protein].append(k)
@@ -434,15 +436,15 @@ def _mcl_analysis(network_df:pd.DataFrame, inflation:Any, verbose:int = 0) -> (l
     A = nx.to_numpy_array(G)
 
     # check for user defined inflation parameter
-    if inflation != None:
+    if inflation is not None:
         max_q_inflation = float(inflation)
         print('Using manually set inflation parameter:', str(max_q_inflation))
         # Run MCL algorithm
         try:
             result = mc.run_mcl(A, inflation = max_q_inflation)
             clusters = mc.get_clusters(result)
-        except ValueError:
-            raise ValueError('Query network has no edges. Please adjust input genes or edge confidence threshold.')
+        except ValueError as exc:
+            raise ValueError('Query network has no edges. Please adjust input genes or edge confidence threshold.') from exc
 
         #export cluster proteins
         nodes_list = np.array(list(G.nodes()))
@@ -456,8 +458,10 @@ def _mcl_analysis(network_df:pd.DataFrame, inflation:Any, verbose:int = 0) -> (l
         mod_values = {}
         #identify best inflation paramater using modularity (Q)
         for inflation in [i / 10 for i in range(15, 30)]:
-            try: result = mc.run_mcl(A, inflation=float(inflation))
-            except ValueError: raise ValueError('Query network has no edges. Please adjust input genes or edge confidence threshold.')
+            try:
+                result = mc.run_mcl(A, inflation=float(inflation))
+            except ValueError as exc:
+                raise ValueError('Query network has no edges. Please adjust input genes or edge confidence threshold.') from exc
             matrix = np.matrix(result)
             clusters = mc.get_clusters(matrix)
             Q = mc.modularity(matrix=matrix, clusters=clusters)
@@ -474,9 +478,6 @@ def _mcl_analysis(network_df:pd.DataFrame, inflation:Any, verbose:int = 0) -> (l
             response = "Optimal inflation could not be determined due to too few query edges: Using default inflation parameter: 3.0"
             max_q_inflation = 3.0
             max_q = 3.0
-        # Run MCL algorithm with optimized inflation parameter
-        if verbose > 0:
-            print(response)
         result = mc.run_mcl(A, inflation = max_q_inflation)
         matrix = np.matrix(result)
         clusters = mc.get_clusters(matrix)
@@ -522,8 +523,7 @@ def _cluster_functional_enrichment(biological_groups:list, biological_groups_nam
     - enrichment_dict_final (dict): A dictionary where each key is a biological group name and each value is a dictionary of cluster names and their corresponding functional enrichment dataframes.
     """
     enrichment_dict_final = {}
-    for i in range(len(biological_groups)):
-        groups = biological_groups[i]
+    for i, groups in enumerate(biological_groups):
         all_paths = list(groups.keys())
 
         enrichment_df_dict = {}
@@ -533,7 +533,7 @@ def _cluster_functional_enrichment(biological_groups:list, biological_groups_nam
             summary_df['#Genes_Bkgd'] = len(all_string_genes)
             summary_df['#clusterGenes'] = len(v)
             summary_df['PathwayGenes'] = summary_df.index.map(groups)
-            summary_df['#PathwayGenes'] = summary_df['PathwayGenes'].apply(lambda x: len(x))
+            summary_df['#PathwayGenes'] = summary_df['PathwayGenes'].apply(len)
             summary_df['clusterGeneOverlap'] = summary_df['PathwayGenes'].apply(
                 lambda x: len(list(set(x).intersection(set(v))))
             )
@@ -690,8 +690,7 @@ def _sort_cluster_dict(cluster_dict:dict, sources:dict) -> (dict, pd.DataFrame):
     hold_df = hold_df.sort_values(by=0, ascending=False)
     # Rename clusters ordered by their size
     sorted_cluster_dict = {}
-    for i in range(len(hold_df)):
-        old_cluster = hold_df.index[i]
+    for i, (old_cluster, _) in enumerate(hold_df.iterrows()):
         sorted_cluster_dict[f"cluster_{i+1}"] = cluster_dict[old_cluster]
     # Expand dict length-wise
     data = [(gene, cluster) for cluster, genes in sorted_cluster_dict.items() for gene in genes]
@@ -960,7 +959,9 @@ def _annotated_true_clusters_enrich_sig(true_clusters_enrich_df_dict:dict, pval_
     for biological_group, cluster_dict in true_clusters_enrich_df_dict.items():
         for k, v in cluster_dict.items():
             summary_df = v
-            summary_df['RandomIterationTopPvals'] = summary_df.index.map(pval_merged_tuple_set[biological_group])
+            summary_df['RandomIterationTopPvals'] = summary_df.index.map(
+                lambda idx: [float(x) for x in pval_merged_tuple_set[biological_group][idx]]
+            )
             summary_df['TrueClusterRanking'] = summary_df.apply(lambda x: _annotate_percentile_of_score(x['pval'], x['RandomIterationTopPvals']), axis = 1)
             if k not in new_dict:
                 new_dict[k] = {}
@@ -1139,6 +1140,7 @@ def functional_clustering(genes_1: list = False, genes_2: list = False, genes_3:
                     combo_df = pd.concat([combo_df, df], axis=0, ignore_index=True)
                 df.to_csv(enrich_save_path + cluster_num + '_' + biological_group + '_enrichment.csv', index = False)
             combo_df = combo_df.sort_values(by=['qval', 'biological_group'], ascending = True)
+            combo_df = combo_df[combo_df['biological_group'] != 'combo']
             combo_df.to_csv(enrich_save_path + cluster_num + '_combo_enrichment.csv', index = False)
 
     return true_gene_network, true_cluster_df, true_clusters_enrichment_df_dict
